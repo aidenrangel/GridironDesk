@@ -2,8 +2,7 @@
 
 A single-page NFL stats site built on ESPN's public JSON feeds: home page, scores with live gamecast,
 standings, playoff picture + simulated odds, power index, team stats, league leaders, fantasy scoring,
-pick'em, weekly recap, player pages/watchlist/comparison, trade analyzer, rosters, injuries, news,
-seasons back to 2010.
+player pages and comparison, rosters, injuries, news, seasons back to 2010.
 No build step, no backend.
 
 ## Files
@@ -27,4 +26,4 @@ Opening `index.html` directly from disk also works in Safari/Chrome; only the in
 
 ## Keyboard shortcuts
 `/` search · `←` `→` previous/next week · `t` theme · `?` help · `g` then `h` home, `s` scores, `t` standings,
-`p` playoffs, `o` odds, `l` leaders, `r` players, `m` teams, `f` fantasy, `k` pick'em, `w` recap, `n` news, `i` injuries, `c` compare.
+`p` playoffs, `o` odds, `l` leaders, `r` players, `m` teams, `f` fantasy, `n` news, `i` injuries, `c` compare.
