@@ -80,12 +80,23 @@ async function teamInfo(id) {
   }
   return t;
 }
-async function seasonGames() {
-  const base = await getJSON(`${API}/scoreboard`, 30000);
-  const cal = (base.leagues?.[0]?.calendar || []).find(c => c.label === 'Regular Season');
-  const n = cal?.entries?.length || 18;
-  const weeks = await Promise.all(Array.from({ length: n }, (_, i) => getJSON(`${API}/scoreboard?seasontype=2&week=${i + 1}&dates=${SEASON}`, 120000).catch(() => ({ events: [] }))));
-  return weeks.flatMap(w => w.events || []);
+const POST = [['1','Wild Card','WC'],['2','Divisional','DIV'],['3','Conf. Championship','CONF'],['5','Super Bowl','SB']];
+async function seasonCalendar() {
+  const base = isCur() ? await getJSON(`${API}/scoreboard`, 30000) : await getJSON(`${API}/scoreboard?dates=${SEASON}&seasontype=2&week=1`, 600000);
+  const cal = base.leagues?.[0]?.calendar || [];
+  const reg = (cal.find(c => c.label === 'Regular Season')?.entries || []).map(e => ({ key: String(Number(e.value)), n: Number(e.value), type: 2, label: e.label, short: 'W' + Number(e.value) }));
+  if (!reg.length) for (let i = 1; i <= 18; i++) reg.push({ key: String(i), n: i, type: 2, label: 'Week ' + i, short: 'W' + i });
+  const postEntries = cal.find(c => c.label === 'Postseason')?.entries || [];
+  const post = POST.map(([v, l, sh]) => { const e = postEntries.find(x => String(Number(x.value)) === v); return { key: 'p' + v, n: Number(v), type: 3, label: e?.label || l, short: sh, date: e?.startDate }; });
+  // only list playoff rounds that have started (current season) or all of them (past seasons)
+  const now = Date.now();
+  return { reg, post: post.filter(x => !isCur() || !x.date || new Date(x.date) - now < 7 * 86400000), cur: isCur() ? (base.week?.number || 1) : null };
+}
+async function seasonGames(includePost = true) {
+  const cal = await seasonCalendar();
+  const want = [...cal.reg, ...(includePost ? cal.post : [])];
+  const weeks = await Promise.all(want.map(w => getJSON(`${API}/scoreboard?seasontype=${w.type}&week=${w.n}&dates=${SEASON}`, w.type === 2 && isCur() ? 120000 : 600000).then(d => (d.events || []).map(ev => ({ ...ev, _post: w.type === 3, _wk: w }))).catch(() => [])));
+  return weeks.flat();
 }
 async function teamSchedule(id) {
   try { const d = await getJSON(`${API}/teams/${id}/schedule?season=${SEASON}`, 120000); if (d.events) return d.events; } catch (e) { console.warn('schedule feed fallback', e.message); }
@@ -151,7 +162,7 @@ async function fullLeaders(onProgress) {
 }
 // games summarised per team from the season scoreboard: results, opponents, margins
 async function teamResults() {
-  const games = await seasonGames(); const by = {};
+  const games = (await seasonGames()).filter(ev => !ev._post); const by = {};
   games.forEach(ev => { const c = ev.competitions[0]; if (!c.status?.type?.completed) return; const [a, h] = byHome(c);
     [[a, h], [h, a]].forEach(([me, op]) => { (by[me.team.id] ||= []).push({ ev, wk: ev.week?.number, op: op.team.id, opTeam: op.team, ms: scoreOf(me), os: scoreOf(op), res: me.winner ? 'W' : op.winner ? 'L' : 'T', home: me.homeAway === 'home' }); }); });
   return by;
@@ -198,7 +209,12 @@ function wpChart(wp, a, h, { hh = 150, w = 520 } = {}) {
 
 /* ---------- theme / search / mobile menu ---------- */
 const root = document.documentElement;
-const sb_ = document.getElementById('seasonBadge'); if (sb_) sb_.textContent = SEASON;
+const ssel = document.getElementById('seasonSel');
+if (ssel) { ssel.innerHTML = Array.from({ length: CUR_SEASON - 2009 }, (_, i) => CUR_SEASON - i).map(y => `<option value="${y}" ${y === SEASON ? 'selected' : ''}>${y}</option>`).join('');
+  ssel.onchange = e => setSeason(Number(e.target.value)); }
+function setSeason(y) { SEASON = y; store.set('season', y); cache.clear(); teamIndex = null; rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; if (ssel) ssel.value = y; const b = document.getElementById('seasonBanner'); if (b) b.hidden = isCur(); toast((isCur() ? 'Back to the current season' : 'Viewing the ' + y + ' season')); ticker(); route(); }
+document.getElementById('seasonBanner')?.querySelector('a')?.addEventListener('click', e => { e.preventDefault(); setSeason(CUR_SEASON); });
+if (document.getElementById('seasonBanner')) document.getElementById('seasonBanner').hidden = isCur();
 const savedTheme = store.get('theme', null); if (savedTheme) root.dataset.theme = savedTheme;
 document.getElementById('theme').onclick = () => { const dark = root.dataset.theme ? root.dataset.theme === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches; root.dataset.theme = dark ? 'light' : 'dark'; store.set('theme', root.dataset.theme); };
 
@@ -278,13 +294,14 @@ function watchScores(events) {
 function notify(title, body) { toast(body); if (store.get('notify', false) && 'Notification' in window && Notification.permission === 'granted') { try { new Notification(title, { body, icon: 'icon-192.png', tag: title }); } catch {} } }
 
 async function scores(week) {
-  const base = await getJSON(`${API}/scoreboard`, 30000);
-  currentWeek = isCur() ? (base.week?.number || 1) : 18;
-  const w = Number(week) || currentWeek;
-  const sb = (isCur() && w === currentWeek) ? base : await getJSON(`${API}/scoreboard?seasontype=2&week=${w}&dates=${SEASON}`, 30000);
+  const cal = await seasonCalendar(); const allW = [...cal.reg, ...cal.post];
+  const base = isCur() ? await getJSON(`${API}/scoreboard`, 30000) : null;
+  // current season: ESPN's live week (may be a playoff round); past seasons: the Super Bowl
+  const liveKey = base ? (base.season?.type === 3 ? 'p' + base.week?.number : String(base.week?.number || 1)) : (cal.post[cal.post.length - 1]?.key || '18');
+  const key = allW.some(x => x.key === String(week)) ? String(week) : liveKey;
+  const wobj = allW.find(x => x.key === key) || allW[0]; const wi = allW.indexOf(wobj);
+  const sb = (base && key === liveKey) ? base : await getJSON(`${API}/scoreboard?seasontype=${wobj.type}&week=${wobj.n}&dates=${SEASON}`, isCur() ? 30000 : 600000);
   if (isCur()) watchScores(sb.events);
-  const cal = (base.leagues?.[0]?.calendar || []).find(c => c.label === 'Regular Season');
-  const weeks = cal?.entries?.map(e => ({ n: Number(e.value), label: e.label })) || Array.from({ length: 18 }, (_, i) => ({ n: i + 1, label: 'Week ' + (i + 1) }));
   const events = [...sb.events].sort((x, y) => (favGame(y) ? 1 : 0) - (favGame(x) ? 1 : 0));
   const live = sb.events.filter(e => e.status.type.state === 'in');
   const featured = sb.events.find(favGame) || [...live].sort((x, y) => { const d = e => Math.abs(num(e.competitions[0].competitors[0].score) - num(e.competitions[0].competitors[1].score)); return d(x) - d(y); })[0] || sb.events.find(e => e.status.type.state === 'pre') || sb.events[0];
@@ -292,21 +309,21 @@ async function scores(week) {
   events.forEach(ev => { const d = new Date(ev.date).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }); (byDay[d] ||= []).push(ev); });
   const anyLive = live.length > 0;
   view.innerHTML = `
-    <div class="bar"><div><h1>Scoreboard</h1><h2>${SEASON} season · ${esc(weeks.find(x => x.n === w)?.label || 'Week ' + w)}</h2></div>
+    <div class="bar"><div><h1>Scoreboard</h1><h2>${SEASON} ${wobj.type === 3 ? 'postseason' : 'season'} · ${esc(wobj.label)}</h2></div>
       <div class="row">
-        <span class="upd">${anyLive ? 'Live · auto-refreshing' : 'Updated ' + new Date().toLocaleTimeString()}</span>
-        <button class="chip" id="prevw" ${w <= 1 ? 'disabled' : ''}>‹</button>
-        <select id="wk" aria-label="Week">${weeks.map(x => `<option value="${x.n}" ${x.n === w ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
-        <button class="chip" id="nextw" ${w >= weeks.length ? 'disabled' : ''}>›</button>
+        <span class="upd">${anyLive ? 'Live · auto-refreshing' : isCur() ? 'Updated ' + new Date().toLocaleTimeString() : 'Final results'}</span>
+        <button class="chip" id="prevw" ${wi <= 0 ? 'disabled' : ''}>‹</button>
+        <select id="wk" aria-label="Week"><optgroup label="Regular season">${cal.reg.map(x => `<option value="${x.key}" ${x.key === key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</optgroup>${cal.post.length ? `<optgroup label="Postseason">${cal.post.map(x => `<option value="${x.key}" ${x.key === key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</optgroup>` : ''}</select>
+        <button class="chip" id="nextw" ${wi >= allW.length - 1 ? 'disabled' : ''}>›</button>
       </div></div>
     ${myTeamsStrip(sb.events)}
     ${featured ? featuredCard(featured) : ''}
     ${sb.events.length ? '' : '<div class="panel"><div class="empty">No games scheduled this week.</div></div>'}
     <div class="stack">${Object.entries(byDay).map(([d, evs]) => `<div class="panel"><h3>${esc(d)}<span class="muted" style="font-size:12px;letter-spacing:0;text-transform:none">${evs.length} game${evs.length > 1 ? 's' : ''}</span></h3>${evs.map(gameCard).join('')}</div>`).join('')}</div>`;
   document.getElementById('wk').onchange = e => location.hash = `scores/${e.target.value}`;
-  document.getElementById('prevw').onclick = () => location.hash = `scores/${w - 1}`;
-  document.getElementById('nextw').onclick = () => location.hash = `scores/${w + 1}`;
-  if (anyLive) poll(() => scores(w));
+  document.getElementById('prevw').onclick = () => location.hash = `scores/${allW[wi - 1].key}`;
+  document.getElementById('nextw').onclick = () => location.hash = `scores/${allW[wi + 1].key}`;
+  if (anyLive) poll(() => scores(key));
 }
 function featuredCard(ev) {
   const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c); const live = st.state === 'in', pre = st.state === 'pre';
@@ -381,7 +398,7 @@ async function game(id, tab = 'box') {
       ${recent.length ? `<div class="pbp">${recent.map(pl => `<div class="play"><span class="q">Q${esc(pl.period?.number)}<br><small>${esc(pl.clock?.displayValue || '')}</small></span><span>${pl.scoringPlay ? '<b class="pos">SCORE</b> ' : ''}${esc(pl.text)}</span><span class="sc">${pl.start?.downDistanceText ? esc(pl.start.downDistanceText) : ''}</span></div>`).join('')}</div>` : ''}</div>`;
   }
   const tabsHTML = [['box','Box score'],['drives','Drives'],['stats','Team stats']].map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('');
-  view.innerHTML = `<a class="back" href="#scores/${esc(s.header?.week || '')}">← Scoreboard</a>
+  view.innerHTML = `<a class="back" href="#scores/${s.header?.season?.type === 3 ? 'p' : ''}${esc(s.header?.week || '')}">← Scoreboard</a>
     <div class="bar"><div><h1>${esc(a.team.displayName)} at ${esc(h.team.displayName)}</h1><h2>${live ? '<span class="dot"></span>' : ''}${esc(st.detail)}${info.venue?.fullName ? ' · ' + esc(info.venue.fullName) : ''}${info.attendance ? ' · ' + Number(info.attendance).toLocaleString() + ' att.' : ''}${info.weather?.temperature != null ? ' · ' + esc(info.weather.temperature) + '°F ' + esc(info.weather.displayValue || '') : ''}</h2></div><span class="upd">${esc(bc)}${odds?.details ? ' · ' + esc(odds.details) + (odds.overUnder ? ' · O/U ' + esc(odds.overUnder) : '') : ''}${live ? ' · auto-refreshing' : ''}</span></div>
     <div class="panel"><div class="box scoreline"><span></span><span class="h">1</span><span class="h">2</span><span class="h">3</span><span class="h">4</span><span class="h">OT</span><span class="h">T</span>${teamRow(a)}${teamRow(h)}</div></div>
     ${liveHTML ? `<div style="margin-top:14px">${liveHTML}</div>` : ''}
@@ -428,8 +445,14 @@ async function playoffs() {
         return `<tr class="clk ${i === 7 ? 'cut' : ''} ${isFav(e.team.id) ? 'fav' : ''}" data-t="${esc(e.team.id)}"><td class="tm"><span class="seed ${cls}">${seed < 99 ? seed : '–'}</span><img src="${esc(logo(e.team))}" alt="">${esc(e.team.displayName)}</td><td class="num">${esc(stat(e,'overall'))}</td><td class="num">${esc(stat(e,'winPercent'))}</td><td class="num">${esc(stat(e,'differential'))}</td><td class="num">${esc(stat(e,'gamesBehind'))}</td><td class="num">${esc(stat(e,'streak'))}</td><td class="muted">${label}</td></tr>`; }).join('')}
     </tbody></table></div></div>`;
   };
-  view.innerHTML = `<div class="bar"><div><h1>Playoff picture</h1><h2>If the season ended today · seeds from ESPN's standings</h2></div><a class="chip" href="#odds">Simulated playoff odds →</a></div>
-    <div class="stack">${(d.children || []).map(confHTML).join('')}</div>`;
+  let bracket = '';
+  if (!isCur()) {
+    const post = (await seasonGames()).filter(ev => ev._post);
+    const rounds = POST.map(([v, l]) => [l, post.filter(ev => ev._wk?.n === Number(v))]).filter(x => x[1].length);
+    bracket = rounds.length ? `<div class="grid" style="margin-bottom:14px">${rounds.map(([l, evs]) => `<div class="panel"><h3>${esc(l)}</h3>${evs.map(gameCard).join('')}</div>`).join('')}</div>` : '';
+  }
+  view.innerHTML = `<div class="bar"><div><h1>${isCur() ? 'Playoff picture' : SEASON + ' playoffs'}</h1><h2>${isCur() ? 'If the season ended today · seeds from ESPN\'s standings' : 'Results by round, then final regular-season seeding'}</h2></div>${isCur() ? '<a class="chip" href="#odds">Simulated playoff odds →</a>' : ''}</div>
+    ${bracket}<div class="stack">${(d.children || []).map(confHTML).join('')}</div>`;
   wire();
 }
 
@@ -585,7 +608,7 @@ async function team(id, tab = 'schedule') {
     const me = c.competitors.find(x => x.team.id === String(id)), op = c.competitors.find(x => x.team.id !== String(id));
     const done = c.status?.type?.completed, state = c.status?.type?.state;
     const res = done ? (me.winner ? 'W' : op.winner ? 'L' : 'T') : '';
-    return { ev, c, me, op, done, state, res, wk: ev.week?.number, ms: scoreOf(me), os: scoreOf(op), opTeam: op.team };
+    return { ev, c, me, op, done, state, res, wk: ev._post ? (ev._wk?.short || 'PO') : ev.week?.number, post: !!ev._post, ms: scoreOf(me), os: scoreOf(op), opTeam: op.team };
   });
   const played = games.filter(g => g.done);
   const pf = played.reduce((n, g) => n + g.ms, 0), pa = played.reduce((n, g) => n + g.os, 0);
@@ -619,7 +642,7 @@ async function team(id, tab = 'schedule') {
   if (tab === 'schedule') {
     tt.innerHTML = `${played.length >= 2 ? `<div class="panel"><h3>Scoring trend</h3><div class="chart">${lineChart([{ v: played.map(g => g.ms), cls: 'lA', area: true }, { v: played.map(g => g.os), cls: 'lB' }], played.map(g => 'W' + g.wk))}</div><div class="legend"><span><i></i>Points scored</span><span><i class="b"></i>Points allowed</span></div></div>` : ''}
     <div class="panel"><h3>${SEASON} schedule &amp; results</h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opponent</th><th>Result</th><th class="num">Score</th><th>Status</th></tr></thead><tbody>
-      ${games.map(g => `<tr class="clk" data-g="${esc(g.ev.id)}"><td class="num">${esc(g.wk ?? '')}</td><td class="tm" style="justify-content:flex-start"><img src="${esc(logo(g.op.team))}" alt="">${g.me.homeAway === 'home' ? 'vs' : '@'} ${esc(g.op.team.displayName)} <span class="muted">${esc(g.op.records?.[0]?.summary || '')}</span></td>
+      ${games.map(g => `<tr class="clk ${g.post ? 'hl' : ''}" data-g="${esc(g.ev.id)}"><td class="num">${esc(g.wk ?? '')}</td><td class="tm" style="justify-content:flex-start"><img src="${esc(logo(g.op.team))}" alt="">${g.me.homeAway === 'home' ? 'vs' : '@'} ${esc(g.op.team.displayName)} <span class="muted">${esc(g.op.records?.[0]?.summary || '')}</span></td>
         <td><span class="res ${g.res}">${g.res}</span></td><td class="num">${g.state === 'pre' ? '' : g.ms + '–' + g.os}</td>
         <td class="muted">${g.done ? 'Final' : g.state === 'in' ? '<span class="dot"></span>Live' : esc(fmtDate(g.ev.date))}</td></tr>`).join('')}
     </tbody></table></div></div>`;
@@ -712,7 +735,8 @@ async function news() {
 /* ---------- playoff odds (Monte Carlo, computed here) ---------- */
 async function odds() {
   view.innerHTML = `<div class="bar"><div><h1>Playoff odds</h1><h2>Simulating the rest of the season…</h2></div></div><div class="prog" id="op"><i style="width:0"></i></div>`;
-  const [stnd, games, idx] = await Promise.all([standingsL3(), seasonGames(), teamsIndex()]);
+  const [stnd, gamesAll, idx] = await Promise.all([standingsL3(), seasonGames(), teamsIndex()]); const games = gamesAll.filter(ev => !ev._post);
+  if (!isCur()) { view.innerHTML = `<div class="bar"><div><h1>Playoff odds</h1><h2>${SEASON} season</h2></div></div><div class="panel"><div class="empty">Odds are simulated for the current season only. The ${SEASON} playoffs are history: see the <a class="lnk" href="#playoffs">playoff picture</a> for results.</div></div>`; return; }
   // team table with division membership
   const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => div.standings.entries.forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: v('wins'), l: v('losses'), t: v('ties'), pf: v('pointsFor'), pa: v('pointsAgainst') }; })));
   const ids = Object.keys(T); if (!ids.length) throw new Error('Standings unavailable for simulation.');
@@ -768,10 +792,10 @@ function fantasyFromBox(summary) {
 }
 const fpts = (r, sc) => r.passYd * sc.passYd + r.passTd * sc.passTd + r.int * sc.int + r.rushYd * sc.rushYd + r.rushTd * sc.rushTd + r.rec * sc.rec + r.recYd * sc.recYd + r.recTd * sc.recTd + r.fumL * sc.fumL + r.fg * sc.fg + r.xp * sc.xp;
 async function fantasy(scope = 'week', wk) {
-  const base = await getJSON(`${API}/scoreboard`, 30000); const cw = isCur() ? (base.week?.number || 1) : 18;
+  const calF = await seasonCalendar(); const cw = isCur() ? Math.min(calF.cur || 1, calF.reg.length) : calF.reg.length;
   const w = Number(wk) || cw; const fmt = store.get('fformat', 'half');
   view.innerHTML = `<div class="bar"><div><h1>Fantasy</h1><h2>Loading box scores…</h2></div></div><div class="prog" id="fp"><i style="width:0"></i></div>`;
-  const all = await seasonGames(); const weeks = scope === 'season' ? [...new Set(all.map(e => e.week?.number).filter(Boolean))].filter(n => n <= cw) : [w];
+  const all = (await seasonGames()).filter(e => !e._post); const weeks = scope === 'season' ? [...new Set(all.map(e => e.week?.number).filter(Boolean))].filter(n => n <= cw) : [w];
   const evs = all.filter(e => weeks.includes(e.week?.number) && e.status?.type?.state !== 'pre');
   const totals = {}; let done = 0;
   await Promise.all(evs.map(async ev => { try { const sum = await getJSON(`${API}/summary?event=${ev.id}`, ev.status.type.completed ? 86400000 : 60000); const f = fantasyFromBox(sum);
@@ -835,7 +859,7 @@ async function pcompare(aId, bId) {
 
 /* ---------- settings ---------- */
 async function settings() {
-  const seasons = Array.from({ length: 5 }, (_, i) => CUR_SEASON - i);
+  const seasons = Array.from({ length: CUR_SEASON - 2009 }, (_, i) => CUR_SEASON - i);
   const nperm = 'Notification' in window ? Notification.permission : 'unsupported';
   const installable = !!window.deferredInstall;
   view.innerHTML = `<div class="bar"><div><h1>Settings</h1><h2>Season, alerts and app install</h2></div></div>
@@ -848,7 +872,7 @@ async function settings() {
         ${installable ? '<button class="chip on" id="inst">Install app</button>' : '<p class="muted" style="font-size:13px;margin:0">On iPhone: Share → <b>Add to Home Screen</b>. On Android/desktop Chrome: use the install icon in the address bar. (Requires the site to be served over https, e.g. GitHub Pages.)</p>'}</div></div>
       <div class="panel"><h3>Cache</h3><div class="box"><p class="muted" style="margin:0 0 10px">Rosters are cached for a day so Players and Leaders open instantly.</p><button class="chip" id="clr">Clear cached data</button></div></div>
     </div>`;
-  document.getElementById('season').onchange = e => { SEASON = Number(e.target.value); store.set('season', SEASON); cache.clear(); teamIndex = null; rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Season set to ' + SEASON); ticker(); };
+  document.getElementById('season').onchange = e => setSeason(Number(e.target.value));
   document.getElementById('ntog').onchange = async e => { if (e.target.checked) { const p = await Notification.requestPermission(); if (p !== 'granted') { e.target.checked = false; toast('Notifications blocked'); return; } } store.set('notify', e.target.checked); toast(e.target.checked ? 'Alerts on' : 'Alerts off'); settings(); };
   const inst = document.getElementById('inst'); if (inst) inst.onclick = async () => { window.deferredInstall.prompt(); await window.deferredInstall.userChoice; window.deferredInstall = null; settings(); };
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };

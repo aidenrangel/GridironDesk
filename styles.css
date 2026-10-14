@@ -354,3 +354,7 @@ nav.bottom{display:none}
 a.theme{font-family:var(--mono);font-size:12px;color:var(--muted)}
 .box label{display:flex;gap:8px;align-items:center}
 @media (max-width:640px){.mystrip .lbl{display:none}}
+
+select.theme{font-family:var(--mono);font-size:12px;color:var(--fg);background:var(--panel-2);padding:5px 6px}
+.banner{background:color-mix(in srgb,var(--gold) 18%,var(--panel));border:1px solid var(--gold);color:var(--fg);border-radius:8px;padding:8px 14px;font-size:13px;margin-bottom:12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.banner a{color:var(--gold);font-weight:600}

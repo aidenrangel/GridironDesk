@@ -34,7 +34,7 @@
     <a href="#news" data-r="news">News</a>
   </nav>
   <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="gs" placeholder="Search teams & players  ( / )" aria-label="Search" autocomplete="off"><div class="dd" id="gsdd" hidden></div></div>
-  <a class="theme" href="#settings" id="seasonBadge" title="Season & settings">2026</a>
+  <select class="theme" id="seasonSel" aria-label="Season" title="Season"></select>
   <button class="theme" id="theme" aria-label="Toggle theme">◐</button>
 </div></header>
 <nav class="bottom" id="bnav">
@@ -45,6 +45,7 @@
   <a href="#news" data-r="more" id="moreBtn"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>More</a>
 </nav>
 <main>
+  <div class="banner" id="seasonBanner" hidden>Viewing a past season. Live scores in the ticker are from the current season. <a href="#">Back to current season</a></div>
   <div class="ticker" id="ticker"></div>
   <div id="view"><div class="panel"><div class="skel"></div><div class="skel"></div></div></div>
 </main>
