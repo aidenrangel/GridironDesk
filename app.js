@@ -879,7 +879,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '5.2';
+const APP_VERSION = '5.3';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
