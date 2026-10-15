@@ -849,18 +849,18 @@ async function searchAthletes(q) {
   const seen = new Set(); return [...local, ...remote].filter(x => !seen.has(x.id) && seen.add(x.id)).slice(0, 10);
 }
 function parseSide(v) { const [id, yr] = String(v || '').split('-'); return { id: id || '', yr: Number(yr) || SEASON }; }
-async function pcompare(aV, bV) {
+async function pcompare(aV, bV, mode = 'season') {
   const A0 = parseSide(aV), B0 = parseSide(bV);
   const load = async ({ id, yr }) => { if (!id) return null;
-    const [bio, gl] = await Promise.all([getJSON(`${WEB}/athletes/${id}`, 600000), getJSON(`${WEB}/athletes/${id}/gamelog?season=${yr}`, 600000).catch(() => null)]);
+    const [bio, gl, career] = await Promise.all([getJSON(`${WEB}/athletes/${id}`, 600000), getJSON(`${WEB}/athletes/${id}/gamelog?season=${yr}`, 600000).catch(() => null), getJSON(`${WEB}/athletes/${id}/stats`, 3600000).catch(() => null)]);
     const rows = gl?.events ? gl.seasonTypes.filter(st => /regular/i.test(st.displayName || '') || gl.seasonTypes.length === 1).flatMap(st => (st.categories || []).flatMap(c => (c.events || []).map(e => ({ ...gl.events[e.eventId], stats: e.stats })))).sort((x, y) => (x.week ?? 0) - (y.week ?? 0)) : [];
     const seasons = (gl?.filters || []).find(f => /season/i.test(f.displayName || f.name || ''))?.options?.map(o => Number(o.value)).filter(Boolean) || [yr];
     const reg = gl?.seasonTypes?.find(st => /regular/i.test(st.displayName || '')) || gl?.seasonTypes?.[0];
-    return { id, yr, p: bio.athlete, gl, rows, totals: reg?.categories?.[0]?.totals || [], seasons: [...new Set(seasons)].sort((x, y) => y - x) }; };
-  const [A, B] = await Promise.all([load(A0), load(B0)]);
-  const key = (x, y) => `pcompare/${x.id ? x.id + '-' + x.yr : ''}/${y.id ? y.id + '-' + y.yr : ''}`;
-  const seasonSel = (X, which) => X ? `<select class="ssel" data-side="${which}" aria-label="Season">${X.seasons.map(y => `<option value="${y}" ${y === X.yr ? 'selected' : ''}>${y}</option>`).join('')}</select>` : '';
-  const card = (X, which) => X ? `<div class="pcard" style="--tc:${colorOf(X.p.team)}"><img src="${esc(X.p.headshot?.href || '')}" alt=""><div><b><a href="#player/${esc(X.id)}">${esc(X.p.displayName)}</a></b><small>${esc(X.p.position?.abbreviation || '')} · ${esc(X.p.team?.abbreviation || 'Retired')}${X.p.displayDraft ? ' · ' + esc(X.p.displayDraft.split(':')[0]) + ' draft' : ''}</small><div class="row" style="margin-top:6px">${seasonSel(X, which)}<span class="muted" style="font-size:12px">${X.rows.length} games</span></div></div></div>` : '<div class="pcard empty">Pick a player</div>';
+    return { id, yr, p: bio.athlete, gl, rows, totals: reg?.categories?.[0]?.totals || [], seasons: [...new Set(seasons)].sort((x, y) => y - x), career: career?.categories || [] }; };
+  const [A, B] = await Promise.all([load(A0), load(B0)]); const cur0 = { a: A ? { id: A.id, yr: A.yr } : A0, b: B ? { id: B.id, yr: B.yr } : B0 };
+  const key = (x, y, m = mode) => `pcompare/${x.id ? x.id + '-' + x.yr : ''}/${y.id ? y.id + '-' + y.yr : ''}${m === 'career' ? '/career' : ''}`;
+  const seasonSel = (X, which) => X && mode !== 'career' ? `<select class="ssel" data-side="${which}" aria-label="Season">${X.seasons.map(y => `<option value="${y}" ${y === X.yr ? 'selected' : ''}>${y}</option>`).join('')}</select>` : '';
+  const card = (X, which) => X ? `<div class="pcard" style="--tc:${colorOf(X.p.team)}"><img src="${esc(X.p.headshot?.href || '')}" alt=""><div><b><a href="#player/${esc(X.id)}">${esc(X.p.displayName)}</a></b><small>${esc(X.p.position?.abbreviation || '')} · ${esc(X.p.team?.abbreviation || 'Retired')}${X.p.displayDraft ? ' · ' + esc(X.p.displayDraft.split(':')[0]) + ' draft' : ''}</small><div class="row" style="margin-top:6px">${seasonSel(X, which)}<span class="muted" style="font-size:12px">${mode === 'career' ? 'career' : X.rows.length + ' games'}</span></div></div></div>` : '<div class="pcard empty">Pick a player</div>';
   let body = '';
   if (A && B) {
     const same = A.gl?.labels?.join() === B.gl?.labels?.join();
@@ -881,9 +881,37 @@ async function pcompare(aV, bV) {
       <div class="panel"><h3>${esc(A.gl.displayNames?.[ki] || labels[ki])} · per game</h3><div class="chart">${lineChart([{ v: ser(A), cls: 'lA' }, { v: ser(B), cls: 'lB' }], Array.from({ length: n }, (_, j) => 'G' + (j + 1)))}</div><div class="legend"><span><i></i>${lblA}</span><span><i class="b"></i>${lblB}</span></div></div>` : ''}
       <div class="panel"><h3>Bio</h3><div class="tw"><table><thead><tr><th></th><th>${esc(A.p.displayName)}</th><th>${esc(B.p.displayName)}</th></tr></thead><tbody>${[['Age now','age'],['Height','displayHeight'],['Weight','displayWeight'],['College',x => x.college?.name],['Draft','displayDraft'],['Experience',x => x.experience?.years ?? x.displayExperience],['Status',x => x.status?.name]].map(([l, k]) => `<tr><td class="muted">${l}</td><td>${esc(typeof k === 'function' ? k(A.p) : A.p[k] ?? '–')}</td><td>${esc(typeof k === 'function' ? k(B.p) : B.p[k] ?? '–')}</td></tr>`).join('')}</tbody></table></div></div>
       </div></div>`;
-  } else body = '<div class="panel"><div class="empty">Choose two players above. Search finds anyone in ESPN\'s database, including retired players; then pick each player\'s season.</div></div>';
+  }
+  if (A && B && mode === 'career') {
+    // career: match categories by name; primary = the first player's main category
+    const catA = A.career, catB = B.career; const names = [...new Set([...catA.map(c => c.name), ...catB.map(c => c.name)])];
+    const lower = l => /INT|SACK|FUM|LOST/i.test(l);
+    const gpIdx = c => (c?.labels || []).indexOf('GP');
+    const yearsA = new Set(catA.flatMap(c => c.statistics.map(r => r.season.year))), yearsB = new Set(catB.flatMap(c => c.statistics.map(r => r.season.year)));
+    const summary = X => { const yrs = X === A ? yearsA : yearsB; const main = X.career[0]; const gp = main ? num(main.totals?.[gpIdx(main)]) : 0; return `<div class="kpi"><small>Seasons</small><b>${yrs.size}</b></div><div class="kpi"><small>Years</small><b style="font-size:18px">${yrs.size ? Math.min(...yrs) + '–' + Math.max(...yrs) : '–'}</b></div><div class="kpi"><small>Games</small><b>${gp || '–'}</b></div>`; };
+    const totalsCmp = names.map(n => { const ca = catA.find(c => c.name === n), cb = catB.find(c => c.name === n); const ref = ca || cb; if (!ref?.totals) return '';
+      return `<div class="panel"><h3>${esc(ref.displayName)} · career totals<span class="pill">${ca && cb ? 'both' : ca ? 'only ' + esc(A.p.displayName.split(' ').pop()) : 'only ' + esc(B.p.displayName.split(' ').pop())}</span></h3><div class="cmp">${ref.labels.map((l, i) => { const va = ca ? num(ca.totals[i]) : NaN, vb = cb ? num(cb.totals[i]) : NaN; const lo = lower(l); const aw = ca && cb && (lo ? va < vb : va > vb), bw = ca && cb && (lo ? vb < va : vb > va); const mx = Math.max(Math.abs(va || 0), Math.abs(vb || 0), 1e-9);
+        return `<div class="r"><span class="l ${aw ? 'pos' : ''}">${esc(ca ? ca.totals[i] : '–')}</span><div><div class="lbl">${esc(ref.displayNames?.[i] || l)}</div><div class="bars"><span class="a"><i class="${aw ? 'w' : ''}" style="width:${ca ? Math.abs(va) / mx * 100 : 0}%"></i></span><span class="b"><i class="${bw ? 'w' : ''}" style="width:${cb ? Math.abs(vb) / mx * 100 : 0}%"></i></span></div></div><span class="rr ${bw ? 'pos' : ''}">${esc(cb ? cb.totals[i] : '–')}</span></div>`; }).join('')}</div></div>`; }).join('');
+    // season-by-season table for the main category + cumulative chart on the key stat (season N of career)
+    const main = catA[0]; const mb = catB.find(c => c.name === main?.name);
+    let bySeason = '', chart = '';
+    if (main && mb) { const ki = Math.max(0, main.names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade|receptions/i.test(n) && !/perGame|avg|long/i.test(n)));
+      const sa = [...main.statistics].sort((x, y) => x.season.year - y.season.year), sb = [...mb.statistics].sort((x, y) => x.season.year - y.season.year); const n = Math.max(sa.length, sb.length);
+      const cum = arr => { let t = 0; return Array.from({ length: n }, (_, j) => arr[j] ? (t += num(arr[j].stats[ki])) : null); };
+      const per = arr => Array.from({ length: n }, (_, j) => arr[j] ? num(arr[j].stats[ki]) : null);
+      const lab = main.displayNames?.[ki] || main.labels[ki];
+      chart = `<div class="panel"><h3>${esc(lab)} · cumulative by career season</h3><div class="chart">${lineChart([{ v: cum(sa), cls: 'lA', area: true }, { v: cum(sb), cls: 'lB' }], Array.from({ length: n }, (_, j) => 'Yr ' + (j + 1)))}</div><div class="legend"><span><i></i>${esc(A.p.displayName)}</span><span><i class="b"></i>${esc(B.p.displayName)}</span></div></div>
+        <div class="panel"><h3>${esc(lab)} · per season</h3><div class="chart">${lineChart([{ v: per(sa), cls: 'lA' }, { v: per(sb), cls: 'lB' }], Array.from({ length: n }, (_, j) => 'Yr ' + (j + 1)))}</div><div class="legend"><span><i></i>${esc(A.p.displayName)}</span><span><i class="b"></i>${esc(B.p.displayName)}</span></div></div>`;
+      // best seasons side by side
+      const best = (arr, X) => [...arr].sort((x, y) => num(y.stats[ki]) - num(x.stats[ki])).slice(0, 3).map(r => `<a class="leader" style="grid-template-columns:1fr auto;padding:6px 16px" href="#pcompare/${esc(X.id)}-${r.season.year}/${esc(X === A ? (B.id + '-' + B.yr) : (A.id + '-' + A.yr))}"><div><div class="nm">${r.season.year} <span class="muted" style="font-weight:400">${esc(r.teamSlug?.replace(/-/g, ' ') || '')}</span></div></div><span class="val" style="font-size:18px">${esc(r.stats[ki])}</span></a>`).join('');
+      bySeason = `<div class="half"><div class="panel"><h3>${esc(A.p.displayName)} · best seasons (${esc(main.labels[ki])})</h3>${best(sa, A)}</div><div class="panel"><h3>${esc(B.p.displayName)} · best seasons (${esc(main.labels[ki])})</h3>${best(sb, B)}</div></div>
+        <div class="panel"><h3>${esc(main.displayName)} · season by season</h3><div class="tw"><table><thead><tr><th>Player</th><th>Season</th><th>Team</th>${main.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${[[A, sa], [B, sb]].map(([X, arr]) => arr.map((r, j) => `<tr ${j === 0 ? 'class="hl"' : ''}><td>${j === 0 ? esc(X.p.displayName) : ''}</td><td class="num">${r.season.year}</td><td class="muted">${esc(r.teamSlug?.split('-').pop() || '')}</td>${r.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')).join('')}</tbody></table></div></div>`; }
+    body = `<div class="panel" style="margin-bottom:var(--s4)"><div class="kpis">${summary(A)}${summary(B)}</div></div>
+      <div class="two"><div class="stack">${totalsCmp || '<div class="panel"><div class="empty">Career stats unavailable for one of these players.</div></div>'}${bySeason}</div><div class="stack">${chart}</div></div>`;
+  }
+  if (!(A && B)) body = '<div class="panel"><div class="empty">Choose two players above. Search finds anyone in ESPN\'s database, including retired players; then pick each player\'s season.</div></div>';
   const pick = which => `<div class="search ppick" style="margin:0;flex:1 1 240px"><input id="pp${which}" placeholder="${which === 'a' ? 'First' : 'Second'} player (e.g. Tom Brady)" aria-label="Player ${which}" autocomplete="off"><div class="dd" id="pp${which}dd" hidden></div></div>`;
-  view.innerHTML = `<div class="bar"><div><h1>Player comparison</h1><h2>Any two players, any seasons · regular-season game logs</h2></div></div>
+  view.innerHTML = `<div class="bar"><div><h1>Player comparison</h1><h2>${mode === 'career' ? 'Full careers · regular season' : 'Any two players, any seasons · regular-season game logs'}</h2></div>${A && B ? `<div class="chips"><a class="chip ${mode !== 'career' ? 'on' : ''}" href="#${key(cur0.a, cur0.b, 'season')}">Single season</a><a class="chip ${mode === 'career' ? 'on' : ''}" href="#${key(cur0.a, cur0.b, 'career')}">Career</a></div>` : ''}</div>
     <div class="panel" style="margin-bottom:var(--s4)"><div class="vs" style="grid-template-columns:1fr auto 1fr">${card(A, 'a')}<span class="mid">VS</span>${card(B, 'b')}</div><div class="row" style="padding:0 16px 16px">${pick('a')}${pick('b')}</div></div>${body}`;
   const cur = { a: A ? { id: A.id, yr: A.yr } : A0, b: B ? { id: B.id, yr: B.yr } : B0 };
   view.querySelectorAll('.ssel').forEach(sel => sel.onchange = () => { cur[sel.dataset.side].yr = Number(sel.value); location.hash = key(cur.a, cur.b); });
@@ -917,7 +945,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.1';
+const APP_VERSION = '7.2';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
