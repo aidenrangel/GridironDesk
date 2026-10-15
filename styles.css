@@ -430,3 +430,6 @@ nav.bottom{display:none}
 .more .dd{background:var(--panel);border:1px solid var(--line-2);border-radius:var(--r);box-shadow:var(--shadow);display:grid;min-width:190px;padding:6px}
 .more .dd a{padding:10px 14px;border-radius:6px;font-size:14px;font-weight:500}
 .more .dd a:hover{background:var(--panel-2)}
+
+.ppick .dd{z-index:40}
+.ppick .dd a{color:var(--fg)}

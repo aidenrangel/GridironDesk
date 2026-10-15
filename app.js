@@ -842,7 +842,8 @@ async function fantasy(scope = 'week', wk) {
 /* ---------- player comparison (any player, any season) ---------- */
 // ESPN's search finds retired and past-season players that current rosters don't have
 async function searchAthletes(q) {
-  const local = rosterIndex ? rosterIndex.filter(p => p.name.toLowerCase().includes(q)).slice(0, 6).map(p => ({ id: p.id, name: p.name, sub: `${p.pos} · ${p.team.abbreviation}`, hs: p.hs })) : [];
+  const list = rosterIndex || await allRosters().catch(() => []);
+  const local = list.filter(p => p.name.toLowerCase().includes(q)).slice(0, 6).map(p => ({ id: p.id, name: p.name, sub: `${p.pos} · ${p.team.abbreviation}`, hs: p.hs }));
   let remote = [];
   try { const d = await getJSON(`https://site.web.api.espn.com/apis/search/v2?query=${encodeURIComponent(q)}&limit=12`, 600000);
     remote = (d.results || []).flatMap(r => r.contents || []).filter(c => /^s:20~l:28~a:\d+/.test(c.uid || '')).map(c => ({ id: c.uid.match(/a:(\d+)/)[1], name: c.displayName, sub: c.subtitle || c.description || 'NFL', hs: c.image?.default || '' })); } catch {}
@@ -912,11 +913,11 @@ async function pcompare(aV, bV, mode = 'season') {
   if (!(A && B)) body = '<div class="panel"><div class="empty">Choose two players above. Search finds anyone in ESPN\'s database, including retired players; then pick each player\'s season.</div></div>';
   const pick = which => `<div class="search ppick" style="margin:0;flex:1 1 240px"><input id="pp${which}" placeholder="${which === 'a' ? 'First' : 'Second'} player (e.g. Tom Brady)" aria-label="Player ${which}" autocomplete="off"><div class="dd" id="pp${which}dd" hidden></div></div>`;
   view.innerHTML = `<div class="bar"><div><h1>Player comparison</h1><h2>${mode === 'career' ? 'Full careers · regular season' : 'Any two players, any seasons · regular-season game logs'}</h2></div>${A && B ? `<div class="chips"><a class="chip ${mode !== 'career' ? 'on' : ''}" href="#${key(cur0.a, cur0.b, 'season')}">Single season</a><a class="chip ${mode === 'career' ? 'on' : ''}" href="#${key(cur0.a, cur0.b, 'career')}">Career</a></div>` : ''}</div>
-    <div class="panel" style="margin-bottom:var(--s4)"><div class="vs" style="grid-template-columns:1fr auto 1fr">${card(A, 'a')}<span class="mid">VS</span>${card(B, 'b')}</div><div class="row" style="padding:0 16px 16px">${pick('a')}${pick('b')}</div></div>${body}`;
+    <div class="panel" style="margin-bottom:var(--s4);overflow:visible"><div class="vs" style="grid-template-columns:1fr auto 1fr">${card(A, 'a')}<span class="mid">VS</span>${card(B, 'b')}</div><div class="row" style="padding:0 16px 16px;align-items:flex-start">${pick('a')}${pick('b')}</div></div>${body}`;
   const cur = { a: A ? { id: A.id, yr: A.yr } : A0, b: B ? { id: B.id, yr: B.yr } : B0 };
   view.querySelectorAll('.ssel').forEach(sel => sel.onchange = () => { cur[sel.dataset.side].yr = Number(sel.value); location.hash = key(cur.a, cur.b); });
   const wirePick = which => { const inp = document.getElementById('pp' + which), dd = document.getElementById('pp' + which + 'dd'); let t;
-    inp.oninput = () => { clearTimeout(t); t = setTimeout(async () => { const q = inp.value.trim().toLowerCase(); if (q.length < 2) { dd.hidden = true; return; } dd.innerHTML = '<div class="hd">Searching…</div>'; dd.hidden = false; const hits = await searchAthletes(q);
+    inp.oninput = () => { clearTimeout(t); t = setTimeout(async () => { const q = inp.value.trim().toLowerCase(); if (q.length < 2) { dd.hidden = true; return; } dd.innerHTML = `<div class="hd">${rosterIndex ? 'Searching…' : 'Loading rosters, one moment…'}</div>`; dd.hidden = false; const hits = await searchAthletes(q); if (inp.value.trim().toLowerCase() !== q) return;
       dd.innerHTML = hits.map(p => `<a href="#" data-pick="${esc(p.id)}"><img class="hs" src="${esc(p.hs)}" alt="">${esc(p.name)}<small>${esc(p.sub)}</small></a>`).join('') || '<div class="hd">No matches</div>';
       dd.querySelectorAll('[data-pick]').forEach(a => a.onclick = e => { e.preventDefault(); cur[which] = { id: a.dataset.pick, yr: cur[which].yr || SEASON }; location.hash = key(cur.a, cur.b); }); }, 250); }; };
   wirePick('a'); wirePick('b');
@@ -945,7 +946,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.2';
+const APP_VERSION = '7.3';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
