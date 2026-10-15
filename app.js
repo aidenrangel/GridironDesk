@@ -244,7 +244,7 @@ async function globalSearch() {
 const hl = () => { const as = gsdd.querySelectorAll('a'); as.forEach((a, i) => a.classList.toggle('sel', i === gsSel)); };
 gs.oninput = () => { clearTimeout(gsTimer); gsTimer = setTimeout(globalSearch, 220); }; gs.onfocus = () => { if (gs.value.trim().length >= 2) globalSearch(); };
 gs.onkeydown = e => { const as = gsdd.querySelectorAll('a'); if (e.key === 'ArrowDown') { gsSel = Math.min(gsSel + 1, as.length - 1); hl(); e.preventDefault(); } else if (e.key === 'ArrowUp') { gsSel = Math.max(gsSel - 1, 0); hl(); e.preventDefault(); } else if (e.key === 'Enter' && as[gsSel]) { location.hash = as[gsSel].getAttribute('href'); gsdd.hidden = true; gs.blur(); } };
-document.addEventListener('click', e => { if (!e.target.closest('.search')) gsdd.hidden = true; if (e.target.closest('#gsdd a')) { gsdd.hidden = true; gs.value = ''; } });
+document.addEventListener('click', e => { if (!e.target.closest('.gear')) document.getElementById('gearMenu')?.removeAttribute('open'); if (!e.target.closest('.moremenu')) document.querySelector('.moremenu')?.removeAttribute('open'); if (!e.target.closest('.search')) gsdd.hidden = true; if (e.target.closest('#gsdd a')) { gsdd.hidden = true; gs.value = ''; } });
 document.getElementById('moreBtn').onclick = e => { e.preventDefault(); const old = document.querySelector('.more'); if (old) { old.remove(); return; }
   const wrap = document.createElement('div'); wrap.className = 'more'; 
   wrap.innerHTML = `<div class="dd"><a href="#" id="mshare">Share this page</a>${[['redzone','RedZone'],['playoffs','Playoffs'],['odds','Playoff odds'],['power','Power index'],['teamstats','Team stats'],['players','Players'],['compare','Compare'],['fantasy','Fantasy'],['injuries','Injuries'],['news','News'],['settings','Settings']].map(([r, l]) => `<a href="#${r}">${l}</a>`).join('')}</div>`;
@@ -255,7 +255,7 @@ function route() {
   const [r, a, b, c] = (location.hash.slice(1) || 'home').split('/');
   const alias = { team: 'teams', player: 'players', pcompare: 'players', game: 'scores', odds: 'playoffs', teamstats: 'power', redzone: 'scores' };
   document.querySelectorAll('#nav a, #bnav a, .moremenu a').forEach(x => x.classList.toggle('on', x.dataset.r === (alias[r] || r)));
-  clearInterval(refreshTimer); refreshTimer = null; pollFn = null; document.querySelector('.more')?.remove(); if (r !== 'game' || c !== 'theater') document.body.classList.remove('theater'); document.querySelector('.moremenu')?.removeAttribute('open');
+  clearInterval(refreshTimer); refreshTimer = null; pollFn = null; document.querySelector('.more')?.remove(); if (r !== 'game' || c !== 'theater') document.body.classList.remove('theater'); document.querySelector('.moremenu')?.removeAttribute('open'); document.getElementById('gearMenu')?.removeAttribute('open');
   view.innerHTML = '<div class="panel"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>';
   window.scrollTo(0, 0);
   const pages = { home, scores, standings, playoffs, odds, power, leaders, players, player, pcompare, teams, team, compare, injuries, news, game: gamecast, fantasy, settings, teamstats, redzone };
@@ -1269,7 +1269,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '8.0';
+const APP_VERSION = '8.1';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
