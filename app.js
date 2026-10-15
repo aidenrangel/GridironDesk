@@ -555,8 +555,8 @@ async function players(q0) {
 }
 
 /* ---------- player page ---------- */
-async function player(id) {
-  const [bio, gl, ov, inj] = await Promise.all([getJSON(`${WEB}/athletes/${id}`, 600000), getJSON(`${WEB}/athletes/${id}/gamelog?season=${SEASON}`, 120000).catch(() => null), getJSON(`${WEB}/athletes/${id}/overview`, 600000).catch(() => null), getJSON(`${API}/injuries`, 300000).catch(() => null)]);
+async function player(id, tab = 'season') {
+  const [bio, gl, ov, inj, career] = await Promise.all([getJSON(`${WEB}/athletes/${id}`, 600000), getJSON(`${WEB}/athletes/${id}/gamelog?season=${SEASON}`, 120000).catch(() => null), getJSON(`${WEB}/athletes/${id}/overview`, 600000).catch(() => null), getJSON(`${API}/injuries`, 300000).catch(() => null), getJSON(`${WEB}/athletes/${id}/stats`, 3600000).catch(() => null)]);
   const p = bio.athlete; const t = p.team || {};
   const myInj = inj?.injuries?.flatMap(tm => tm.injuries || []).find(i => String(i.athlete?.id) === String(id) || i.athlete?.displayName === p.displayName);
   let glHTML = '', trendHTML = '', splitHTML = '';
@@ -579,6 +579,22 @@ async function player(id) {
   let ovHTML = '';
   if (ov?.statistics?.splits?.length) { const st = ov.statistics;
     ovHTML = `<div class="panel"><h3>${esc(st.displayName || 'Career')}</h3><div class="tw"><table><thead><tr><th>Split</th>${st.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${st.splits.map(s => `<tr><td>${esc(s.displayName)}</td>${s.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`; }
+  // career: season-by-season per category, with a chart on the key stat and career totals row
+  const cats = (career?.categories || []).filter(c => c.statistics?.length);
+  const isRateL = l => /%|AVG|RTG|QBR|LNG|PCT|Y\/|\/G|YPC|YPR|^GP$|^GS$/i.test(l);
+  const careerHTML = cats.length ? cats.map((c, ci) => { const rows = [...c.statistics].sort((x, y) => x.season.year - y.season.year);
+    const ki = Math.max(0, c.names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade|receptions|touchdowns/i.test(n) && !/perGame|avg|long/i.test(n)));
+    const gpI = c.labels.indexOf('GP'); const best = rows.reduce((b, r) => num(r.stats[ki]) > num(b.stats[ki]) ? r : b, rows[0]);
+    const perG = c.totals && gpI >= 0 && num(c.totals[gpI]) ? c.labels.map((l, i) => isRateL(l) ? '' : (num(c.totals[i]) / num(c.totals[gpI])).toFixed(1)) : null;
+    return `<div class="panel"><h3>${esc(c.displayName)}<span class="pill">${rows.length} season${rows.length > 1 ? 's' : ''} · best ${esc(c.labels[ki])}: ${esc(best.stats[ki])} (${best.season.year})</span></h3>
+      ${rows.length > 1 && ci === 0 ? `<div class="chart">${lineChart([{ v: rows.map(r => num(r.stats[ki])), cls: 'lA', area: true }], rows.map(r => String(r.season.year).slice(2)))}</div><div class="legend"><span><i></i>${esc(c.displayNames?.[ki] || c.labels[ki])} by season</span></div>` : ''}
+      <div class="tw"><table><thead><tr><th>Season</th><th>Team</th>${c.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>
+        ${rows.map(r => `<tr class="${r === best && rows.length > 1 ? 'hl' : ''}"><td class="num">${r.season.year}${r.season.year === SEASON ? ' <span class="tag" style="font-size:10px">current</span>' : ''}</td><td class="muted">${esc((r.teamSlug || '').split('-').map(w => w[0]?.toUpperCase() + w.slice(1)).join(' '))}</td>${r.stats.map((v, i) => `<td class="num ${i === ki && r === best && rows.length > 1 ? 'pos' : ''}">${esc(v)}</td>`).join('')}</tr>`).join('')}
+        ${c.totals ? `<tr style="font-weight:600"><td colspan="2">Career</td>${c.totals.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>` : ''}
+        ${perG ? `<tr class="muted"><td colspan="2">Per game</td>${perG.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>` : ''}
+      </tbody></table></div></div>`; }).join('') : '<div class="panel"><div class="empty">No career statistics available for this player.</div></div>';
+  const yrs = [...new Set(cats.flatMap(c => c.statistics.map(r => r.season.year)))];
+  const teamsPlayed = [...new Set(cats.flatMap(c => c.statistics.map(r => r.teamSlug)))].filter(Boolean);
   const newsHTML = (ov?.news || []).slice(0, 5).map(n => `<a class="leader" style="grid-template-columns:1fr" href="${esc(n.links?.web?.href || '#')}" target="_blank" rel="noopener"><div><div class="nm">${esc(n.headline)}</div><div class="sub">${esc(n.lastModified ? ago(n.lastModified) : '')}${n.byline ? ' · ' + esc(n.byline) : ''}</div></div></a>`).join('');
   view.innerHTML = `<div class="row" style="justify-content:space-between"><a class="back" href="#players">← Players</a><a class="chip" href="#pcompare/${esc(id)}-${SEASON}/">Compare with another player →</a></div>
     <div class="phero" style="--tc:${colorOf(t)}"><img class="hs" src="${esc(p.headshot?.href || '')}" alt=""><div>
@@ -586,8 +602,12 @@ async function player(id) {
       <div class="bio"><span>HT <b>${esc(p.displayHeight || '–')}</b></span><span>WT <b>${esc(p.displayWeight || '–')}</b></span><span>Age <b>${esc(p.age ?? '–')}</b></span><span>College <b>${esc(p.college?.name || '–')}</b></span><span>Draft <b>${esc(p.displayDraft || 'Undrafted')}</b></span><span>Exp <b>${esc(p.experience?.years ?? p.displayExperience ?? '–')}</b></span><span>Status <b>${esc(p.status?.name || '')}</b>${myInj ? ' ' + injTag(myInj.status) : ''}</span></div>
       ${myInj ? `<div class="muted" style="margin-top:8px;font-size:13px">${esc(myInj.shortComment || myInj.longComment || myInj.details?.type || '')}${myInj.details?.returnDate ? ' · Expected return ' + esc(fmtDay(myInj.details.returnDate)) : ''}</div>` : ''}
     </div></div>
-    <div class="two"><div class="stack">${glHTML || '<div class="panel"><div class="empty">No game log for this season yet.</div></div>'}${ovHTML}</div>
-    <div class="stack">${trendHTML}${splitHTML}${newsHTML ? `<div class="panel"><h3>News</h3>${newsHTML}</div>` : ''}</div></div>`;
+    <div class="tabs">${[['season', SEASON + ' season'],['career', `Career${yrs.length ? ' (' + yrs.length + ' seasons)' : ''}`]].map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-ptab="${k}">${l}</button>`).join('')}</div>
+    ${tab === 'career' ? `<div class="panel" style="margin-bottom:var(--s4)"><div class="kpis"><div class="kpi"><small>Seasons</small><b>${yrs.length || '–'}</b></div><div class="kpi"><small>Years</small><b style="font-size:18px">${yrs.length ? Math.min(...yrs) + '–' + Math.max(...yrs) : '–'}</b></div><div class="kpi"><small>Teams</small><b style="font-size:18px">${teamsPlayed.length ? teamsPlayed.map(t => esc(t.split('-').pop().toUpperCase())).join(', ') : '–'}</b></div><div class="kpi"><small>Games</small><b>${(() => { const c0 = cats[0]; const i = c0 ? c0.labels.indexOf('GP') : -1; return i >= 0 ? esc(c0.totals?.[i] ?? '–') : '–'; })()}</b></div></div></div>
+      <div class="stack">${careerHTML}</div>`
+    : `<div class="two"><div class="stack">${glHTML || '<div class="panel"><div class="empty">No game log for this season yet.</div></div>'}${ovHTML}</div>
+    <div class="stack">${trendHTML}${splitHTML}${newsHTML ? `<div class="panel"><h3>News</h3>${newsHTML}</div>` : ''}</div></div>`}`;
+  view.querySelectorAll('[data-ptab]').forEach(b => b.onclick = () => { history.replaceState(null, '', `#player/${id}/${b.dataset.ptab}`); player(id, b.dataset.ptab); });
   wire();
 }
 
@@ -955,7 +975,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.4';
+const APP_VERSION = '7.5';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
