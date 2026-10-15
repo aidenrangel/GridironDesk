@@ -621,7 +621,7 @@ function renderGameTab(S) {
   el.innerHTML = content[GC.tab] || content.box;
 }
 function flashScore(side) { const el = document.querySelector(`.sb-score[data-side="${side}"]`); if (!el) return; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
-let cdTimer; function tickCountdown() { clearInterval(cdTimer); const el = document.getElementById('countdown'); if (!el) return; const t = Number(el.dataset.t); const f = () => { const d = t - Date.now(); if (d <= 0) { el.textContent = 'Kickoff!'; clearInterval(cdTimer); return; } const h = Math.floor(d / 3600000), m = Math.floor(d % 3600000 / 60000), s = Math.floor(d % 60000 / 1000); el.innerHTML = `Kickoff in <b class="num">${h ? h + 'h ' : ''}${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s</b> · ${esc(fmtDate(t))}`; }; f(); cdTimer = setInterval(f, 1000); }
+let cdTimer; function tickCountdown() { clearInterval(cdTimer); const el = document.getElementById('countdown'); if (!el) return; const t = Number(el.dataset.t); const f = () => { const d = t - Date.now(); if (d <= 0) { el.textContent = 'Kickoff!'; clearInterval(cdTimer); return; } const days = Math.floor(d / 86400000), h = Math.floor(d % 86400000 / 3600000), m = Math.floor(d % 3600000 / 60000), s = Math.floor(d % 60000 / 1000); const parts = days ? `${days}d ${h}h ${String(m).padStart(2, '0')}m` : h ? `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s` : `${m}m ${String(s).padStart(2, '0')}s`; el.innerHTML = `Kickoff in <b class="num">${parts}</b> · ${esc(fmtDate(t))}`; }; f(); cdTimer = setInterval(f, 1000); }
 
 /* ---------- alerts (toast + optional notification + optional sound) ---------- */
 let audioCtx; function beep(kind) { if (!store.get('sound', false)) return; try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); const o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.type = 'sine'; o.frequency.value = kind === 'score' ? 880 : kind === 'turnover' ? 440 : 660; g.gain.value = .08; o.connect(g); g.connect(audioCtx.destination); o.start(); o.frequency.exponentialRampToValueAtTime(kind === 'score' ? 1320 : 330, audioCtx.currentTime + .18); o.stop(audioCtx.currentTime + .22); } catch {} }
@@ -1269,7 +1269,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '8.1';
+const APP_VERSION = '8.2';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
