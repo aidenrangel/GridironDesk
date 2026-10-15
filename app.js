@@ -580,7 +580,7 @@ async function player(id, tab = 'season') {
   if (ov?.statistics?.splits?.length) { const st = ov.statistics;
     ovHTML = `<div class="panel"><h3>${esc(st.displayName || 'Career')}</h3><div class="tw"><table><thead><tr><th>Split</th>${st.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${st.splits.map(s => `<tr><td>${esc(s.displayName)}</td>${s.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`; }
   // career: season-by-season per category, with a chart on the key stat and career totals row
-  const cats = (career?.categories || []).filter(c => c.statistics?.length);
+  const cats = (career?.categories || []).filter(c => c.statistics?.length).map(fillQBR);
   const isRateL = l => /%|AVG|RTG|QBR|LNG|PCT|Y\/|\/G|YPC|YPR|^GP$|^GS$/i.test(l);
   const careerHTML = cats.length ? cats.map((c, ci) => { const rows = [...c.statistics].sort((x, y) => x.season.year - y.season.year);
     const ki = Math.max(0, c.names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade|receptions|touchdowns/i.test(n) && !/perGame|avg|long/i.test(n)));
@@ -590,9 +590,9 @@ async function player(id, tab = 'season') {
       ${rows.length > 1 && ci === 0 ? `<div class="chart">${lineChart([{ v: rows.map(r => num(r.stats[ki])), cls: 'lA', area: true }], rows.map(r => String(r.season.year).slice(2)))}</div><div class="legend"><span><i></i>${esc(c.displayNames?.[ki] || c.labels[ki])} by season</span></div>` : ''}
       <div class="tw"><table><thead><tr><th>Season</th><th>Team</th>${c.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>
         ${rows.map(r => `<tr class="${r === best && rows.length > 1 ? 'hl' : ''}"><td class="num">${r.season.year}${r.season.year === SEASON ? ' <span class="tag" style="font-size:10px">current</span>' : ''}</td><td class="muted">${esc((r.teamSlug || '').split('-').map(w => w[0]?.toUpperCase() + w.slice(1)).join(' '))}</td>${r.stats.map((v, i) => `<td class="num ${i === ki && r === best && rows.length > 1 ? 'pos' : ''}">${esc(v)}</td>`).join('')}</tr>`).join('')}
-        ${c.totals ? `<tr style="font-weight:600"><td colspan="2">Career</td>${c.totals.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>` : ''}
+        ${c.totals ? `<tr style="font-weight:600"><td colspan="2">Career</td>${c.totals.map((v, i) => `<td class="num">${c.qbrEstimated && c.labels[i] === 'QBR' ? '≈' : ''}${esc(v)}</td>`).join('')}</tr>` : ''}
         ${perG ? `<tr class="muted"><td colspan="2">Per game</td>${perG.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>` : ''}
-      </tbody></table></div></div>`; }).join('') : '<div class="panel"><div class="empty">No career statistics available for this player.</div></div>';
+      </tbody></table></div>${c.qbrEstimated ? qbrNote(c.qbrSeasons < c.statistics.length ? [c.qbrSeasons + ' of ' + c.statistics.length + ' seasons have QBR; it begins in 2006'] : []) : ''}</div>`; }).join('') : '<div class="panel"><div class="empty">No career statistics available for this player.</div></div>';
   const yrs = [...new Set(cats.flatMap(c => c.statistics.map(r => r.season.year)))];
   const teamsPlayed = [...new Set(cats.flatMap(c => c.statistics.map(r => r.teamSlug)))].filter(Boolean);
   const newsHTML = (ov?.news || []).slice(0, 5).map(n => `<a class="leader" style="grid-template-columns:1fr" href="${esc(n.links?.web?.href || '#')}" target="_blank" rel="noopener"><div><div class="nm">${esc(n.headline)}</div><div class="sub">${esc(n.lastModified ? ago(n.lastModified) : '')}${n.byline ? ' · ' + esc(n.byline) : ''}</div></div></a>`).join('');
@@ -859,6 +859,17 @@ async function fantasy(scope = 'week', wk) {
   const fw = document.getElementById('fw'); if (fw) fw.onchange = e => location.hash = `fantasy/week/${e.target.value}`;
 }
 
+/* ESPN leaves career QBR blank (it's play-by-play based). Estimate it as a games-weighted average of season QBRs. */
+function fillQBR(cat) {
+  if (!cat?.labels || !cat.totals) return cat;
+  const qi = cat.labels.indexOf('QBR'), gi = cat.labels.indexOf('GP');
+  if (qi < 0 || cat.totals[qi] !== '-' && cat.totals[qi] !== '' && cat.totals[qi] != null) return cat;
+  let w = 0, sum = 0; cat.statistics.forEach(r => { const q = num(r.stats[qi]), g = gi >= 0 ? num(r.stats[gi]) : 1; if (r.stats[qi] !== '-' && q > 0 && g > 0) { sum += q * g; w += g; } });
+  if (!w) return cat;
+  const totals = [...cat.totals]; totals[qi] = (sum / w).toFixed(1);
+  return { ...cat, totals, qbrEstimated: true, qbrSeasons: cat.statistics.filter(r => r.stats[qi] !== '-' && num(r.stats[qi]) > 0).length };
+}
+const qbrNote = parts => `<p class="note" style="padding:0 16px 12px;margin:0">≈ Career QBR is a games-weighted average of season QBRs${parts.length ? ' (' + parts.map(esc).join('; ') + ')' : ''}. ESPN doesn't publish a true career QBR because it is built from play-by-play data.</p>`;
 /* ---------- player comparison (any player, any season) ---------- */
 // ESPN's search finds retired and past-season players that current rosters don't have
 async function searchAthletes(q) {
@@ -877,7 +888,7 @@ async function pcompare(aV, bV, mode = 'season') {
     const rows = gl?.events ? gl.seasonTypes.filter(st => /regular/i.test(st.displayName || '') || gl.seasonTypes.length === 1).flatMap(st => (st.categories || []).flatMap(c => (c.events || []).map(e => ({ ...gl.events[e.eventId], stats: e.stats })))).sort((x, y) => (x.week ?? 0) - (y.week ?? 0)) : [];
     const seasons = (gl?.filters || []).find(f => /season/i.test(f.displayName || f.name || ''))?.options?.map(o => Number(o.value)).filter(Boolean) || [yr];
     const reg = gl?.seasonTypes?.find(st => /regular/i.test(st.displayName || '')) || gl?.seasonTypes?.[0];
-    return { id, yr, p: bio.athlete, gl, rows, totals: reg?.categories?.[0]?.totals || [], seasons: [...new Set(seasons)].sort((x, y) => y - x), career: career?.categories || [] }; };
+    return { id, yr, p: bio.athlete, gl, rows, totals: reg?.categories?.[0]?.totals || [], seasons: [...new Set(seasons)].sort((x, y) => y - x), career: (career?.categories || []).map(fillQBR) }; };
   const [A, B] = await Promise.all([load(A0), load(B0)]); const cur0 = { a: A ? { id: A.id, yr: A.yr } : A0, b: B ? { id: B.id, yr: B.yr } : B0 };
   const key = (x, y, m = mode) => `pcompare/${x.id ? x.id + '-' + x.yr : ''}/${y.id ? y.id + '-' + y.yr : ''}${m === 'career' ? '/career' : ''}`;
   const seasonSel = (X, which) => X && mode !== 'career' ? `<select class="ssel" data-side="${which}" aria-label="Season">${X.seasons.map(y => `<option value="${y}" ${y === X.yr ? 'selected' : ''}>${y}</option>`).join('')}</select>` : '';
@@ -919,7 +930,8 @@ async function pcompare(aV, bV, mode = 'season') {
     const totalsCmp = names.map(n => { const ca = catA.find(c => c.name === n), cb = catB.find(c => c.name === n); const ref = ca || cb; if (!ref?.totals) return '';
       const title = cview === 'game' ? 'per game' : cview === 'season' ? 'per season' : 'career totals';
       return `<div class="panel"><h3>${esc(ref.displayName)} · ${title}<span class="pill">${ca && cb ? 'both' : ca ? 'only ' + esc(A.p.displayName.split(' ').pop()) : 'only ' + esc(B.p.displayName.split(' ').pop())}</span></h3><div class="cmp">${ref.labels.map((l, i) => { const xa = ca ? adj(A, ca, l, ca.totals[i]) : null, xb = cb ? adj(B, cb, l, cb.totals[i]) : null; const va = xa ? xa.v : NaN, vb = xb ? xb.v : NaN; const lo = lower(l); const aw = ca && cb && (lo ? va < vb : va > vb), bw = ca && cb && (lo ? vb < va : vb > va); const mx = Math.max(Math.abs(va || 0), Math.abs(vb || 0), 1e-9);
-        return `<div class="r"><span class="l ${aw ? 'pos' : ''}">${esc(xa ? xa.d : '–')}</span><div><div class="lbl">${esc(ref.displayNames?.[i] || l)}${cview !== 'total' && !isRate(l) ? ' <span style="opacity:.6">/' + (cview === 'game' ? 'G' : 'yr') + '</span>' : ''}</div><div class="bars"><span class="a"><i class="${aw ? 'w' : ''}" style="width:${ca ? Math.abs(va) / mx * 100 : 0}%"></i></span><span class="b"><i class="${bw ? 'w' : ''}" style="width:${cb ? Math.abs(vb) / mx * 100 : 0}%"></i></span></div></div><span class="rr ${bw ? 'pos' : ''}">${esc(xb ? xb.d : '–')}</span></div>`; }).join('')}</div></div>`; }).join('');
+        const est = l === 'QBR' && ((ca?.qbrEstimated) || (cb?.qbrEstimated));
+        return `<div class="r"><span class="l ${aw ? 'pos' : ''}">${ca?.qbrEstimated && l === 'QBR' ? '≈' : ''}${esc(xa ? xa.d : '–')}</span><div><div class="lbl">${esc(ref.displayNames?.[i] || l)}${est ? ' <span style="opacity:.6" title="Games-weighted average of season QBRs; ESPN does not publish a true career QBR">est.</span>' : ''}${cview !== 'total' && !isRate(l) ? ' <span style="opacity:.6">/' + (cview === 'game' ? 'G' : 'yr') + '</span>' : ''}</div><div class="bars"><span class="a"><i class="${aw ? 'w' : ''}" style="width:${ca ? Math.abs(va) / mx * 100 : 0}%"></i></span><span class="b"><i class="${bw ? 'w' : ''}" style="width:${cb ? Math.abs(vb) / mx * 100 : 0}%"></i></span></div></div><span class="rr ${bw ? 'pos' : ''}">${cb?.qbrEstimated && l === 'QBR' ? '≈' : ''}${esc(xb ? xb.d : '–')}</span></div>`; }).join('')}</div>${(ca?.qbrEstimated || cb?.qbrEstimated) ? qbrNote([ca, cb].filter(c => c?.qbrEstimated && c.qbrSeasons < c.statistics.length).map(c => (c === ca ? A : B).p.displayName.split(' ').pop() + ': ' + c.qbrSeasons + ' of ' + c.statistics.length + ' seasons have QBR; it begins in 2006')) : ''}</div>`; }).join('');
     // season-by-season table for the main category + cumulative chart on the key stat (season N of career)
     const main = catA[0]; const mb = catB.find(c => c.name === main?.name);
     let bySeason = '', chart = '';
@@ -975,7 +987,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.6';
+const APP_VERSION = '7.7';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
