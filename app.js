@@ -255,7 +255,7 @@ function route() {
   const [r, a, b, c] = (location.hash.slice(1) || 'home').split('/');
   const alias = { team: 'teams', player: 'players', pcompare: 'players', game: 'scores', odds: 'playoffs', teamstats: 'power' };
   document.querySelectorAll('#nav a, #bnav a, .moremenu a').forEach(x => x.classList.toggle('on', x.dataset.r === (alias[r] || r)));
-  clearInterval(refreshTimer); refreshTimer = null; document.querySelector('.more')?.remove(); document.querySelector('.moremenu')?.removeAttribute('open');
+  clearInterval(refreshTimer); refreshTimer = null; pollFn = null; document.querySelector('.more')?.remove(); document.querySelector('.moremenu')?.removeAttribute('open');
   view.innerHTML = '<div class="panel"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>';
   window.scrollTo(0, 0);
   const pages = { home, scores, standings, playoffs, odds, power, leaders, players, player, pcompare, teams, team, compare, injuries, news, game, fantasy, settings, teamstats };
@@ -265,7 +265,12 @@ function route() {
 window.addEventListener('hashchange', route);
 window.addEventListener('unhandledrejection', e => { if (view.querySelector('.skel')) view.innerHTML = fail(e.reason || new Error('Unknown error')); });
 window.addEventListener('error', e => { if (view.querySelector('.skel')) view.innerHTML = fail(e.error || new Error(e.message)); });
-const poll = fn => { refreshTimer = setInterval(() => { cache.clear(); fn().then(() => toast('Updated ' + new Date().toLocaleTimeString())).catch(() => {}); ticker(); }, 30000); };
+/* live polling: a fast interval for game pages/ticker, a slower one for heavier pages; paused while the tab is hidden */
+const LIVE_MS = () => Math.max(10, Number(store.get('liveInterval', 15))) * 1000;
+let pollFn = null, pollFast = true, pollBusy = false;
+async function runPoll() { if (pollBusy || document.hidden || !pollFn) return; pollBusy = true; try { cache.clear(); liveCache.t = 0; await pollFn(); ticker(); const u = document.querySelector('.upd'); if (u && /auto-refreshing/.test(u.textContent)) u.textContent = `Live · updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`; } catch {} finally { pollBusy = false; } }
+const poll = (fn, fast = true) => { pollFn = fn; pollFast = fast; clearInterval(refreshTimer); refreshTimer = setInterval(runPoll, fast ? LIVE_MS() : Math.max(LIVE_MS() * 2, 30000)); };
+document.addEventListener('visibilitychange', () => { if (!document.hidden && pollFn) runPoll(); });
 
 /* ---------- ticker ---------- */
 async function ticker() {
@@ -333,7 +338,7 @@ async function scores(week) {
   document.getElementById('wk').onchange = e => location.hash = `scores/${e.target.value}`;
   document.getElementById('prevw').onclick = () => location.hash = `scores/${allW[wi - 1].key}`;
   document.getElementById('nextw').onclick = () => location.hash = `scores/${allW[wi + 1].key}`;
-  if (anyLive) poll(() => scores(key));
+  if (anyLive) poll(() => scores(key), true);
 }
 function featuredCard(ev) {
   const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c); const live = st.state === 'in', pre = st.state === 'pre';
@@ -565,7 +570,7 @@ async function leaders(cat) {
   document.getElementById('lteam').onchange = e => { teamF = e.target.value; render(); };
   view.querySelectorAll('[data-pos]').forEach(b => b.onclick = () => { posF = b.dataset.pos; view.querySelectorAll('[data-pos]').forEach(x => x.classList.toggle('on', x === b)); render(); });
   view.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { const g = groups.find(x => x[0] === b.dataset.g); if (g) location.hash = 'leaders/' + g[1][0].name; });
-  if (lb.games.length) poll(() => leaders(cat));
+  if (lb.games.length) poll(() => leaders(cat), false);
 }
 
 /* ---------- players (search) ---------- */
@@ -617,7 +622,7 @@ async function player(id, tab = 'season') {
       ${liveRow}
       ${totals ? `<tr class="hl"><td colspan="3"><b>Season${liveRow ? ' <span class="muted" style="font-weight:400">incl. live</span>' : ''}</b></td>${totals.map(v => `<td class="num"><b>${esc(v)}</b></td>`).join('')}</tr>` : ''}
     </tbody></table></div></div>`;
-    if (liveRow && !refreshTimer) poll(() => player(id, tab));
+    if (liveRow && !refreshTimer) poll(() => player(id, tab), false);
     const ki = Math.max(0, names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade/i.test(n) && !/perGame|avg|long/i.test(n)));
     if (rows.length >= 2) {
       trendHTML = `<div class="panel"><h3>${esc(gl.displayNames?.[ki] || labels[ki] || 'Trend')} by week</h3><div class="chart">${lineChart([{ v: rows.map(r => num(r.stats?.[ki])), cls: 'lA', area: true }], rows.map(r => 'W' + r.week))}</div></div>`;
@@ -1025,18 +1030,21 @@ async function settings() {
       <div class="panel"><h3>Score alerts</h3><div class="box"><p class="muted" style="margin:0 0 10px">Get a browser notification when one of your teams scores or a game goes final. Works while this page is open.</p>
         <label class="row"><input type="checkbox" id="ntog" ${store.get('notify', false) ? 'checked' : ''} ${nperm === 'unsupported' ? 'disabled' : ''}> Enable alerts</label><p class="muted" style="font-size:12px;margin:8px 0 0">${nperm === 'unsupported' ? 'Not supported in this browser.' : nperm === 'denied' ? 'Blocked in browser settings.' : nperm === 'granted' ? 'Permission granted.' : 'You will be asked for permission.'}</p>
         <p class="muted" style="font-size:12px;margin:8px 0 0">My teams: ${favs.length ? favs.map(f => esc((teamIndex || {})[f]?.abbreviation || f)).join(', ') : 'none yet. Open a team page and tap ☆.'}</p></div></div>
+      <div class="panel"><h3>Live refresh</h3><div class="box"><p class="muted" style="margin:0 0 10px">How often live pages re-check ESPN. Game pages and the ticker use this rate; heavier pages (Home, Leaders, player logs) use double it. ESPN's own feeds update every 10–20 s, so faster than 10 s gains nothing. Polling pauses while the tab is hidden.</p>
+        <select id="lint">${[[10,'Every 10 s (fastest useful)'],[15,'Every 15 s (default)'],[30,'Every 30 s'],[60,'Every 60 s (light)']].map(([v, l]) => `<option value="${v}" ${Number(store.get('liveInterval', 15)) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
       <div class="panel"><h3>Install</h3><div class="box"><p class="muted" style="margin:0 0 10px">Add Gridiron Desk to your home screen for a full-screen app with the last scoreboard cached offline.</p>
         ${installable ? '<button class="chip on" id="inst">Install app</button>' : '<p class="muted" style="font-size:13px;margin:0">On iPhone: Share → <b>Add to Home Screen</b>. On Android/desktop Chrome: use the install icon in the address bar. (Requires the site to be served over https, e.g. GitHub Pages.)</p>'}</div></div>
       <div class="panel"><h3>Cache &amp; updates</h3><div class="box"><p class="muted" style="margin:0 0 10px">Running version <b class="num">${APP_VERSION}</b>. Rosters are cached for a day so Players and Leaders open instantly. If a new upload doesn't appear, force an update.</p><div class="row"><button class="chip" id="clr">Clear cached data</button><button class="chip on" id="upd">Force update</button></div></div></div>
     </div>`;
   document.getElementById('season').onchange = e => setSeason(Number(e.target.value));
+  document.getElementById('lint').onchange = e => { store.set('liveInterval', Number(e.target.value)); toast('Live refresh: every ' + e.target.value + ' s'); };
   document.getElementById('ntog').onchange = async e => { if (e.target.checked) { const p = await Notification.requestPermission(); if (p !== 'granted') { e.target.checked = false; toast('Notifications blocked'); return; } } store.set('notify', e.target.checked); toast(e.target.checked ? 'Alerts on' : 'Alerts off'); settings(); };
   const inst = document.getElementById('inst'); if (inst) inst.onclick = async () => { window.deferredInstall.prompt(); await window.deferredInstall.userChoice; window.deferredInstall = null; settings(); };
   document.getElementById('upd').onclick = forceUpdate;
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.11';
+const APP_VERSION = '7.12';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
@@ -1069,7 +1077,7 @@ async function home() {
       ${wl.length ? `<div class="panel"><h3>${perfLabel}</h3>${wl.map(([k, arr]) => `<div class="lhead" style="grid-template-columns:1fr"><span>${esc(arr[0]?.athlete ? ({passingYards:'Passing',rushingYards:'Rushing',receivingYards:'Receiving'})[k] || k : k)}</span></div>${arr.map(l => `<a class="leader" style="padding:6px 12px" href="#player/${esc(l.athlete.id)}"><span></span><img src="${esc(hsOf(l.athlete))}" alt=""><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub">${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')} · ${esc(l.ev.shortName)}${l.ev.status.type.state === 'in' ? ' <span class="pos">live</span>' : ''}</div></div><span class="val" style="font-size:14px">${esc(l.displayValue)}</span></a>`).join('')}`).join('')}</div>` : ''}
       ${seeds}
     </div></div>`;
-  if (live.length) poll(home);
+  if (live.length) poll(home, false);
 }
 
 /* ---------- team stats table (7) ---------- */
@@ -1104,5 +1112,5 @@ document.addEventListener('keydown', e => {
 
 document.addEventListener('error', e => { const el = e.target; if (el?.tagName === 'IMG' && /headshots/.test(el.src) && !el.dataset.fb) { el.dataset.fb = 1; el.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="#2a3648"/><circle cx="32" cy="24" r="11" fill="#8793a6"/><path d="M10 58c3-13 12-19 22-19s19 6 22 19z" fill="#8793a6"/></svg>'); } }, true);
 ticker(); route();
-setInterval(ticker, 60000);
+setInterval(() => { if (document.hidden) return; const live = [...document.querySelectorAll('#ticker .st.live')].length > 0; if (live || Date.now() % 60000 < LIVE_MS()) { cache.delete(`${API}/scoreboard`); ticker(); } }, LIVE_MS());
 })();
