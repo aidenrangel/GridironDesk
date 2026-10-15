@@ -580,7 +580,7 @@ async function player(id) {
   if (ov?.statistics?.splits?.length) { const st = ov.statistics;
     ovHTML = `<div class="panel"><h3>${esc(st.displayName || 'Career')}</h3><div class="tw"><table><thead><tr><th>Split</th>${st.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${st.splits.map(s => `<tr><td>${esc(s.displayName)}</td>${s.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`; }
   const newsHTML = (ov?.news || []).slice(0, 5).map(n => `<a class="leader" style="grid-template-columns:1fr" href="${esc(n.links?.web?.href || '#')}" target="_blank" rel="noopener"><div><div class="nm">${esc(n.headline)}</div><div class="sub">${esc(n.lastModified ? ago(n.lastModified) : '')}${n.byline ? ' · ' + esc(n.byline) : ''}</div></div></a>`).join('');
-  view.innerHTML = `<div class="row" style="justify-content:space-between"><a class="back" href="#players">← Players</a><a class="chip" href="#pcompare/${esc(id)}">Compare with another player →</a></div>
+  view.innerHTML = `<div class="row" style="justify-content:space-between"><a class="back" href="#players">← Players</a><a class="chip" href="#pcompare/${esc(id)}-${SEASON}/">Compare with another player →</a></div>
     <div class="phero" style="--tc:${colorOf(t)}"><img class="hs" src="${esc(p.headshot?.href || '')}" alt=""><div>
       <div class="row"><span class="jer">#${esc(p.jersey || '')}</span><div><h1 style="margin:0">${esc(p.displayName)}</h1><h2>${esc(p.position?.displayName || '')} · <a href="#team/${esc(t.id)}">${esc(t.displayName || 'Free agent')}</a></h2></div></div>
       <div class="bio"><span>HT <b>${esc(p.displayHeight || '–')}</b></span><span>WT <b>${esc(p.displayWeight || '–')}</b></span><span>Age <b>${esc(p.age ?? '–')}</b></span><span>College <b>${esc(p.college?.name || '–')}</b></span><span>Draft <b>${esc(p.displayDraft || 'Undrafted')}</b></span><span>Exp <b>${esc(p.experience?.years ?? p.displayExperience ?? '–')}</b></span><span>Status <b>${esc(p.status?.name || '')}</b>${myInj ? ' ' + injTag(myInj.status) : ''}</span></div>
@@ -839,39 +839,60 @@ async function fantasy(scope = 'week', wk) {
   const fw = document.getElementById('fw'); if (fw) fw.onchange = e => location.hash = `fantasy/week/${e.target.value}`;
 }
 
-/* ---------- player comparison ---------- */
-async function pcompare(aId, bId) {
-  const pick = (which, id) => `<div class="search ppick" style="margin:0;flex:1 1 240px"><input id="pp${which}" placeholder="${which === 'a' ? 'First' : 'Second'} player" aria-label="Player ${which}" autocomplete="off"><div class="dd" id="pp${which}dd" hidden></div></div>`;
-  const load = async id => { if (!id) return null; const [bio, gl] = await Promise.all([getJSON(`${WEB}/athletes/${id}`, 600000), getJSON(`${WEB}/athletes/${id}/gamelog?season=${SEASON}`, 120000).catch(() => null)]);
-    const rows = gl?.events ? gl.seasonTypes.flatMap(s => (s.categories || []).flatMap(c => (c.events || []).map(e => ({ ...gl.events[e.eventId], stats: e.stats })))).sort((x, y) => (x.week ?? 0) - (y.week ?? 0)) : [];
-    return { p: bio.athlete, gl, rows, totals: gl?.seasonTypes?.[0]?.categories?.[0]?.totals || [] }; };
-  const [A, B] = await Promise.all([load(aId), load(bId)]);
-  const card = X => X ? `<div class="pcard" style="--tc:${colorOf(X.p.team)}"><img src="${esc(X.p.headshot?.href || '')}" alt=""><div><b>${esc(X.p.displayName)}</b><small>${esc(X.p.position?.abbreviation || '')} · ${esc(X.p.team?.abbreviation || 'FA')} · #${esc(X.p.jersey || '')}</small></div></div>` : '<div class="pcard empty">Pick a player</div>';
+/* ---------- player comparison (any player, any season) ---------- */
+// ESPN's search finds retired and past-season players that current rosters don't have
+async function searchAthletes(q) {
+  const local = rosterIndex ? rosterIndex.filter(p => p.name.toLowerCase().includes(q)).slice(0, 6).map(p => ({ id: p.id, name: p.name, sub: `${p.pos} · ${p.team.abbreviation}`, hs: p.hs })) : [];
+  let remote = [];
+  try { const d = await getJSON(`https://site.web.api.espn.com/apis/search/v2?query=${encodeURIComponent(q)}&limit=12`, 600000);
+    remote = (d.results || []).flatMap(r => r.contents || []).filter(c => /^s:20~l:28~a:\d+/.test(c.uid || '')).map(c => ({ id: c.uid.match(/a:(\d+)/)[1], name: c.displayName, sub: c.subtitle || c.description || 'NFL', hs: c.image?.default || '' })); } catch {}
+  const seen = new Set(); return [...local, ...remote].filter(x => !seen.has(x.id) && seen.add(x.id)).slice(0, 10);
+}
+function parseSide(v) { const [id, yr] = String(v || '').split('-'); return { id: id || '', yr: Number(yr) || SEASON }; }
+async function pcompare(aV, bV) {
+  const A0 = parseSide(aV), B0 = parseSide(bV);
+  const load = async ({ id, yr }) => { if (!id) return null;
+    const [bio, gl] = await Promise.all([getJSON(`${WEB}/athletes/${id}`, 600000), getJSON(`${WEB}/athletes/${id}/gamelog?season=${yr}`, 600000).catch(() => null)]);
+    const rows = gl?.events ? gl.seasonTypes.filter(st => /regular/i.test(st.displayName || '') || gl.seasonTypes.length === 1).flatMap(st => (st.categories || []).flatMap(c => (c.events || []).map(e => ({ ...gl.events[e.eventId], stats: e.stats })))).sort((x, y) => (x.week ?? 0) - (y.week ?? 0)) : [];
+    const seasons = (gl?.filters || []).find(f => /season/i.test(f.displayName || f.name || ''))?.options?.map(o => Number(o.value)).filter(Boolean) || [yr];
+    const reg = gl?.seasonTypes?.find(st => /regular/i.test(st.displayName || '')) || gl?.seasonTypes?.[0];
+    return { id, yr, p: bio.athlete, gl, rows, totals: reg?.categories?.[0]?.totals || [], seasons: [...new Set(seasons)].sort((x, y) => y - x) }; };
+  const [A, B] = await Promise.all([load(A0), load(B0)]);
+  const key = (x, y) => `pcompare/${x.id ? x.id + '-' + x.yr : ''}/${y.id ? y.id + '-' + y.yr : ''}`;
+  const seasonSel = (X, which) => X ? `<select class="ssel" data-side="${which}" aria-label="Season">${X.seasons.map(y => `<option value="${y}" ${y === X.yr ? 'selected' : ''}>${y}</option>`).join('')}</select>` : '';
+  const card = (X, which) => X ? `<div class="pcard" style="--tc:${colorOf(X.p.team)}"><img src="${esc(X.p.headshot?.href || '')}" alt=""><div><b><a href="#player/${esc(X.id)}">${esc(X.p.displayName)}</a></b><small>${esc(X.p.position?.abbreviation || '')} · ${esc(X.p.team?.abbreviation || 'Retired')}${X.p.displayDraft ? ' · ' + esc(X.p.displayDraft.split(':')[0]) + ' draft' : ''}</small><div class="row" style="margin-top:6px">${seasonSel(X, which)}<span class="muted" style="font-size:12px">${X.rows.length} games</span></div></div></div>` : '<div class="pcard empty">Pick a player</div>';
   let body = '';
   if (A && B) {
     const same = A.gl?.labels?.join() === B.gl?.labels?.join();
     const labels = A.gl?.labels || [], names = A.gl?.names || [];
-    const rowsCmp = labels.map((l, i) => { const va = num(A.totals[i]), vb = num(B.totals[i]); const lower = /INT|SACK|FUM/i.test(l); const aw = lower ? va < vb : va > vb, bw = lower ? vb < va : vb > va; const mx = Math.max(Math.abs(va), Math.abs(vb), 1e-9);
-      return `<div class="r"><span class="l ${aw ? 'pos' : ''}">${esc(A.totals[i] ?? '–')}</span><div><div class="lbl">${esc(A.gl.displayNames?.[i] || l)}</div><div class="bars"><span class="a"><i class="${aw ? 'w' : ''}" style="width:${Math.abs(va) / mx * 100}%"></i></span><span class="b"><i class="${bw ? 'w' : ''}" style="width:${Math.abs(vb) / mx * 100}%"></i></span></div></div><span class="rr ${bw ? 'pos' : ''}">${esc(same ? (B.totals[i] ?? '–') : '–')}</span></div>`; }).join('');
+    const rowsCmp = labels.map((l, i) => { const va = num(A.totals[i]), vb = num(same ? B.totals[i] : NaN); const lower = /INT|SACK|FUM/i.test(l); const aw = lower ? va < vb : va > vb, bw = lower ? vb < va : vb > va; const mx = Math.max(Math.abs(va), Math.abs(vb || 0), 1e-9);
+      return `<div class="r"><span class="l ${aw ? 'pos' : ''}">${esc(A.totals[i] ?? '–')}</span><div><div class="lbl">${esc(A.gl.displayNames?.[i] || l)}</div><div class="bars"><span class="a"><i class="${aw ? 'w' : ''}" style="width:${Math.abs(va) / mx * 100}%"></i></span><span class="b"><i class="${bw ? 'w' : ''}" style="width:${same ? Math.abs(vb) / mx * 100 : 0}%"></i></span></div></div><span class="rr ${bw ? 'pos' : ''}">${esc(same ? (B.totals[i] ?? '–') : '–')}</span></div>`; }).join('');
     const ki = Math.max(0, names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade/i.test(n) && !/perGame|avg|long/i.test(n)));
-    const wks = [...new Set([...A.rows, ...B.rows].map(r => r.week))].sort((x, y) => x - y);
-    const ser = X => wks.map(w => { const r = X.rows.find(x => x.week === w); return r ? num(r.stats?.[ki]) : null; });
     const perG = (X, i) => X.rows.length ? (X.rows.reduce((n, r) => n + num(r.stats?.[i]), 0) / X.rows.length).toFixed(1) : '–';
+    const n = Math.max(A.rows.length, B.rows.length);
+    const ser = X => Array.from({ length: n }, (_, j) => X.rows[j] ? num(X.rows[j].stats?.[ki]) : null);
+    const cum = X => { let t = 0; return Array.from({ length: n }, (_, j) => X.rows[j] ? (t += num(X.rows[j].stats?.[ki])) : null); };
+    const lblA = `${esc(A.p.displayName.split(' ').pop())} ${A.yr}`, lblB = `${esc(B.p.displayName.split(' ').pop())} ${B.yr}`;
     body = `<div class="two"><div class="stack">
-      <div class="panel"><h3>${SEASON} totals${same ? '' : '<span class="pill">different positions · showing ' + esc(A.p.displayName) + "'s columns</span>"}</h3><div class="cmp">${rowsCmp}</div></div>
-      ${same ? `<div class="panel"><h3>Per game</h3><div class="tw"><table><thead><tr><th>Player</th><th class="num">G</th>${labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${[A, B].map(X => `<tr><td>${esc(X.p.displayName)}</td><td class="num">${X.rows.length}</td>${labels.map((l, i) => `<td class="num">${perG(X, i)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>` : ''}
+      <div class="panel"><h3>Season totals <span class="pill">${A.yr} vs ${B.yr}${same ? '' : ' · different positions, showing ' + esc(A.p.displayName) + "'s columns"}</span></h3><div class="cmp">${rowsCmp}</div></div>
+      ${same ? `<div class="panel"><h3>Per game</h3><div class="tw"><table><thead><tr><th>Player</th><th class="num">G</th>${labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${[A, B].map(X => `<tr><td>${esc(X.p.displayName)} <span class="muted">${X.yr}</span></td><td class="num">${X.rows.length}</td>${labels.map((l, i) => `<td class="num">${perG(X, i)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>` : ''}
       </div><div class="stack">
-      ${same && wks.length > 1 ? `<div class="panel"><h3>${esc(A.gl.displayNames?.[ki] || labels[ki])} by week</h3><div class="chart">${lineChart([{ v: ser(A), cls: 'lA', area: true }, { v: ser(B), cls: 'lB' }], wks.map(w => 'W' + w))}</div><div class="legend"><span><i></i>${esc(A.p.displayName)}</span><span><i class="b"></i>${esc(B.p.displayName)}</span></div></div>` : ''}
-      <div class="panel"><h3>Bio</h3><div class="tw"><table><thead><tr><th></th><th>${esc(A.p.displayName)}</th><th>${esc(B.p.displayName)}</th></tr></thead><tbody>${[['Age','age'],['Height','displayHeight'],['Weight','displayWeight'],['College',x => x.college?.name],['Draft','displayDraft'],['Experience',x => x.experience?.years ?? x.displayExperience]].map(([l, k]) => `<tr><td class="muted">${l}</td><td>${esc(typeof k === 'function' ? k(A.p) : A.p[k] ?? '–')}</td><td>${esc(typeof k === 'function' ? k(B.p) : B.p[k] ?? '–')}</td></tr>`).join('')}</tbody></table></div></div>
+      ${same && n > 1 ? `<div class="panel"><h3>${esc(A.gl.displayNames?.[ki] || labels[ki])} · cumulative by game</h3><div class="chart">${lineChart([{ v: cum(A), cls: 'lA', area: true }, { v: cum(B), cls: 'lB' }], Array.from({ length: n }, (_, j) => 'G' + (j + 1)))}</div><div class="legend"><span><i></i>${lblA}</span><span><i class="b"></i>${lblB}</span></div></div>
+      <div class="panel"><h3>${esc(A.gl.displayNames?.[ki] || labels[ki])} · per game</h3><div class="chart">${lineChart([{ v: ser(A), cls: 'lA' }, { v: ser(B), cls: 'lB' }], Array.from({ length: n }, (_, j) => 'G' + (j + 1)))}</div><div class="legend"><span><i></i>${lblA}</span><span><i class="b"></i>${lblB}</span></div></div>` : ''}
+      <div class="panel"><h3>Bio</h3><div class="tw"><table><thead><tr><th></th><th>${esc(A.p.displayName)}</th><th>${esc(B.p.displayName)}</th></tr></thead><tbody>${[['Age now','age'],['Height','displayHeight'],['Weight','displayWeight'],['College',x => x.college?.name],['Draft','displayDraft'],['Experience',x => x.experience?.years ?? x.displayExperience],['Status',x => x.status?.name]].map(([l, k]) => `<tr><td class="muted">${l}</td><td>${esc(typeof k === 'function' ? k(A.p) : A.p[k] ?? '–')}</td><td>${esc(typeof k === 'function' ? k(B.p) : B.p[k] ?? '–')}</td></tr>`).join('')}</tbody></table></div></div>
       </div></div>`;
-  } else body = '<div class="panel"><div class="empty">Choose two players above. Type a name to search every roster.</div></div>';
-  view.innerHTML = `<div class="bar"><div><h1>Player comparison</h1><h2>${SEASON} season · head to head</h2></div></div>
-    <div class="panel" style="margin-bottom:14px"><div class="vs" style="grid-template-columns:1fr auto 1fr">${card(A)}<span class="mid">VS</span>${card(B)}</div><div class="row" style="padding:0 14px 14px">${pick('a')}${pick('b')}</div></div>${body}`;
-  const wirePick = which => { const inp = document.getElementById('pp' + which), dd = document.getElementById('pp' + which + 'dd');
-    inp.oninput = async () => { const q = inp.value.trim().toLowerCase(); if (q.length < 2) { dd.hidden = true; return; } const list = await allRosters(); const hits = list.filter(p => p.name.toLowerCase().includes(q)).slice(0, 8);
-      dd.innerHTML = hits.map(p => `<a href="#pcompare/${which === 'a' ? p.id : (aId || '')}/${which === 'b' ? p.id : (bId || '')}"><img class="hs" src="${esc(p.hs)}" alt="">${esc(p.name)}<small>${esc(p.pos)} · ${esc(p.team.abbreviation)}</small></a>`).join('') || '<div class="hd">No matches</div>'; dd.hidden = false; }; };
+  } else body = '<div class="panel"><div class="empty">Choose two players above. Search finds anyone in ESPN\'s database, including retired players; then pick each player\'s season.</div></div>';
+  const pick = which => `<div class="search ppick" style="margin:0;flex:1 1 240px"><input id="pp${which}" placeholder="${which === 'a' ? 'First' : 'Second'} player (e.g. Tom Brady)" aria-label="Player ${which}" autocomplete="off"><div class="dd" id="pp${which}dd" hidden></div></div>`;
+  view.innerHTML = `<div class="bar"><div><h1>Player comparison</h1><h2>Any two players, any seasons · regular-season game logs</h2></div></div>
+    <div class="panel" style="margin-bottom:var(--s4)"><div class="vs" style="grid-template-columns:1fr auto 1fr">${card(A, 'a')}<span class="mid">VS</span>${card(B, 'b')}</div><div class="row" style="padding:0 16px 16px">${pick('a')}${pick('b')}</div></div>${body}`;
+  const cur = { a: A ? { id: A.id, yr: A.yr } : A0, b: B ? { id: B.id, yr: B.yr } : B0 };
+  view.querySelectorAll('.ssel').forEach(sel => sel.onchange = () => { cur[sel.dataset.side].yr = Number(sel.value); location.hash = key(cur.a, cur.b); });
+  const wirePick = which => { const inp = document.getElementById('pp' + which), dd = document.getElementById('pp' + which + 'dd'); let t;
+    inp.oninput = () => { clearTimeout(t); t = setTimeout(async () => { const q = inp.value.trim().toLowerCase(); if (q.length < 2) { dd.hidden = true; return; } dd.innerHTML = '<div class="hd">Searching…</div>'; dd.hidden = false; const hits = await searchAthletes(q);
+      dd.innerHTML = hits.map(p => `<a href="#" data-pick="${esc(p.id)}"><img class="hs" src="${esc(p.hs)}" alt="">${esc(p.name)}<small>${esc(p.sub)}</small></a>`).join('') || '<div class="hd">No matches</div>';
+      dd.querySelectorAll('[data-pick]').forEach(a => a.onclick = e => { e.preventDefault(); cur[which] = { id: a.dataset.pick, yr: cur[which].yr || SEASON }; location.hash = key(cur.a, cur.b); }); }, 250); }; };
   wirePick('a'); wirePick('b');
-  if (!aId) document.getElementById('ppa').focus(); else if (!bId) document.getElementById('ppb').focus();
+  if (!A) document.getElementById('ppa').focus(); else if (!B) document.getElementById('ppb').focus();
 }
 
 /* ---------- settings ---------- */
@@ -896,7 +917,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.0';
+const APP_VERSION = '7.1';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
