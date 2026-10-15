@@ -490,6 +490,24 @@ async function power() {
   table.addEventListener('drawn', wire); wire();
 }
 
+/* ---------- live box scores (ESPN season totals lag until a game is final) ---------- */
+// map leaders categories / game-log column names → box score category + label
+const LIVE_MAP = { passingYards: ['passing','YDS'], passingTouchdowns: ['passing','TD'], completions: ['passing','C/ATT',0], passingAttempts: ['passing','C/ATT',1], interceptions_thrown: ['passing','INT'],
+  rushingYards: ['rushing','YDS'], rushingTouchdowns: ['rushing','TD'], rushingAttempts: ['rushing','CAR'], receivingYards: ['receiving','YDS'], receivingTouchdowns: ['receiving','TD'], receptions: ['receiving','REC'], receivingTargets: ['receiving','TGTS'],
+  totalTackles: ['defensive','TOT'], soloTackles: ['defensive','SOLO'], sacks: ['defensive','SACKS'], tacklesForLoss: ['defensive','TFL'], passesDefended: ['defensive','PD'], QBHits: ['defensive','QB HTS'], interceptions: ['interceptions','INT'], fieldGoalsMade: ['kicking','FG',0], extraPointsMade: ['kicking','XP',0] };
+let liveCache = { t: 0, data: null };
+async function liveBox() {
+  if (!isCur()) return { players: {}, games: [] };
+  if (liveCache.data && Date.now() - liveCache.t < 30000) return liveCache.data;
+  const sb = await getJSON(`${API}/scoreboard`, 30000).catch(() => ({ events: [] }));
+  const live = (sb.events || []).filter(e => e.status.type.state === 'in');
+  const players = {};
+  await Promise.all(live.map(async ev => { try { const sum = await getJSON(`${API}/summary?event=${ev.id}`, 30000);
+    (sum.boxscore?.players || []).forEach(side => side.statistics.forEach(c => c.athletes.forEach(a => { const r = (players[a.athlete.id] ||= { ev, team: side.team, cats: {} }); const o = (r.cats[c.name] ||= {}); c.labels.forEach((l, i) => o[l] = a.stats[i]); }))); } catch {} }));
+  liveCache = { t: Date.now(), data: { players, games: live } }; return liveCache.data;
+}
+const liveVal = (rec, key) => { const m = LIVE_MAP[key]; if (!m || !rec) return 0; const raw = rec.cats[m[0]]?.[m[1]]; if (raw == null) return 0; return m[2] != null ? num(String(raw).split(/[\/-]/)[m[2]]) : num(raw); };
+
 /* ---------- leaders ---------- */
 const LGROUPS = [
   ['Passing', ['passingYards','passingTouchdowns','QBRating','passerRating','completionPct','yardsPerPassAttempt','interceptions_thrown','passingYardsPerGame','completions','passingAttempts']],
@@ -507,21 +525,27 @@ async function leaders(cat) {
   const groups = LGROUPS.map(([g, names]) => [g, names.map(n => byName[n]).filter(Boolean)]).filter(x => x[1].length);
   const used = new Set(groups.flatMap(x => x[1].map(c => c.name)));
   const rest = cats.filter(c => !used.has(c.name)); if (rest.length) groups.push(['More', rest]);
-  const sel = byName[cat] || groups[0][1][0];
+  let sel = byName[cat] || groups[0][1][0];
   const grp = groups.find(x => x[1].includes(sel)) || groups[0];
   const idx = await teamsIndex().catch(() => ({}));
+  // add in-progress box-score numbers (ESPN's season totals only update once a game is final)
+  const lb = await liveBox().catch(() => ({ players: {}, games: [] }));
+  const liveFor = l => liveVal(lb.players[l.athlete.id], sel.name);
+  const dec = /\./.test(sel.leaders[0]?.displayValue || '');
+  const withLive = l => { const add = liveFor(l); return add ? { ...l, value: l.value + add, displayValue: (l.value + add).toFixed(dec ? 1 : 0), liveAdd: add } : l; };
+  if (lb.games.length && LIVE_MAP[sel.name]) { sel = { ...sel, leaders: sel.leaders.map(withLive).sort((a, b) => b.value - a.value) }; }
   const top = sel.leaders[0]?.value || 1;
   const positions = [...new Set(sel.leaders.map(l => l.athlete.position?.abbreviation).filter(Boolean))].sort();
   const teamsIn = [...new Set(sel.leaders.map(l => l.team?.id).filter(Boolean))].map(id => idx[id] || sel.leaders.find(l => l.team?.id === id).team).sort((a, b) => (a.abbreviation || '').localeCompare(b.abbreviation || ''));
   const tcol = l => colorOf(idx[l.team?.id] || l.team);
-  const pod = (l, i) => l ? `<a class="pod ${i === 0 ? 'first' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${tcol(l)}"><span class="rk">${i + 1}</span><img class="tl" src="${esc(logo(idx[l.team?.id] || l.team))}" alt=""><img class="ph" src="${esc(hsOf(l.athlete))}" alt=""><b>${esc(l.athlete.displayName)}</b><small>${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')}</small><span class="v">${esc(l.displayValue)}</span>${i > 0 && sel.leaders[0] ? `<span class="delta">${esc((l.value - sel.leaders[0].value).toFixed(/\./.test(sel.leaders[0].displayValue) ? 1 : 0))} vs leader</span>` : '<span class="delta">leader</span>'}</a>` : '<div></div>';
+  const pod = (l, i) => l ? `<a class="pod ${i === 0 ? 'first' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${tcol(l)}"><span class="rk">${i + 1}</span><img class="tl" src="${esc(logo(idx[l.team?.id] || l.team))}" alt=""><img class="ph" src="${esc(hsOf(l.athlete))}" alt=""><b>${esc(l.athlete.displayName)}</b><small>${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')}</small><span class="v">${esc(l.displayValue)}${l.liveAdd ? '<small class="livetag">+' + esc(l.liveAdd) + ' live</small>' : ''}</span>${i > 0 && sel.leaders[0] ? `<span class="delta">${esc((l.value - sel.leaders[0].value).toFixed(/\./.test(sel.leaders[0].displayValue) ? 1 : 0))} vs leader</span>` : '<span class="delta">leader</span>'}</a>` : '<div></div>';
   const [p1, p2, p3] = sel.leaders;
   let shown = 25, posF = '', teamF = '';
   view.innerHTML = `<div class="bar"><div><h1>League leaders</h1><h2>${SEASON} regular season</h2></div><input id="pq" placeholder="Find a player" aria-label="Filter players" style="min-width:min(100%,260px)"></div>
     <div class="lgroups">${groups.map(([g]) => `<button class="${g === grp[0] ? 'on' : ''}" data-g="${esc(g)}">${esc(g)}</button>`).join('')}</div>
     <div class="lcats" id="lcats">${grp[1].map(c => `<a class="${c === sel ? 'on' : ''}" href="#leaders/${esc(c.name)}">${esc(c.displayName)}</a>`).join('')}</div>
     <div class="two"><div class="panel">
-      <h3>${esc(sel.displayName)}<span class="pill">${sel.leaders.length} qualifiers</span></h3>
+      <h3>${esc(sel.displayName)}<span class="pill">${sel.leaders.length} qualifiers${lb.games.length && LIVE_MAP[sel.name] ? ` · <span class="pos"><span class="dot"></span>${lb.games.length} live game${lb.games.length > 1 ? 's' : ''} included</span>` : ''}</span></h3>
       <div class="podium">${pod(p2, 1)}${pod(p1, 0)}${pod(p3, 2)}</div>
       <div class="lfilters" style="margin-top:14px"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Filter</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}<select id="lteam" aria-label="Team" style="margin-left:auto"><option value="">All teams</option>${teamsIn.map(t => `<option value="${esc(t.id)}">${esc(t.abbreviation || t.displayName)}</option>`).join('')}</select></div>
       <div class="lhead"><span>#</span><span></span><span>Player</span><span>vs leader</span><span>${esc(sel.abbreviation)}</span></div>
@@ -529,7 +553,7 @@ async function leaders(cat) {
       <div id="morewrap" class="empty" style="padding:12px"><button class="chip" id="more">Show all ${sel.leaders.length}</button></div>
     </div>
     <div class="stack lside">${grp[1].filter(c => c !== sel).slice(0, 4).concat(groups.filter(x => x !== grp).map(x => x[1][0])).slice(0, 5).map(c => `<div class="panel"><h3>${esc(c.displayName)}<a class="lnk" style="font-size:12px;letter-spacing:0;text-transform:none" href="#leaders/${esc(c.name)}">All ${c.leaders.length} →</a></h3>${c.leaders.slice(0, 5).map((l, i) => `<a class="leader" href="#player/${esc(l.athlete.id)}"><span class="rank num">${i + 1}</span><img src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub">${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')}</div></div><span class="val">${esc(l.displayValue)}</span></a>`).join('')}</div>`).join('')}</div></div>`;
-  const row = (l, i) => { const pct = Math.max(2, Math.min(100, l.value / top * 100)); const t = idx[l.team?.id] || l.team; return `<a class="lrow ${isFav(l.team?.id) ? 'me' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${colorOf(t)}"><span class="r ${i < 3 ? 't3' : ''}">${i + 1}</span><img class="ph" src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub"><img src="${esc(logo(t))}" alt="">${esc(l.athlete.position?.abbreviation || '')} · ${esc(t?.abbreviation || '')}</div></div><div class="bar" title="${Math.round(pct)}% of leader"><i style="width:${pct}%"></i></div><span class="v">${esc(l.displayValue)}${i > 0 ? `<small>${esc((l.value - top).toFixed(/\./.test(l.displayValue) ? 1 : 0))}</small>` : '<small>leader</small>'}</span></a>`; };
+  const row = (l, i) => { const pct = Math.max(2, Math.min(100, l.value / top * 100)); const t = idx[l.team?.id] || l.team; return `<a class="lrow ${isFav(l.team?.id) ? 'me' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${colorOf(t)}"><span class="r ${i < 3 ? 't3' : ''}">${i + 1}</span><img class="ph" src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub"><img src="${esc(logo(t))}" alt="">${esc(l.athlete.position?.abbreviation || '')} · ${esc(t?.abbreviation || '')}</div></div><div class="bar" title="${Math.round(pct)}% of leader"><i style="width:${pct}%"></i></div><span class="v">${esc(l.displayValue)}${l.liveAdd ? `<small class="livetag">incl. +${esc(l.liveAdd)} live</small>` : i > 0 ? `<small>${esc((l.value - top).toFixed(/\./.test(l.displayValue) ? 1 : 0))}</small>` : '<small>leader</small>'}</span></a>`; };
   const render = () => { const q = document.getElementById('pq').value.toLowerCase();
     const hits = sel.leaders.filter(l => (!posF || l.athlete.position?.abbreviation === posF) && (!teamF || l.team?.id === teamF) && (!q || (l.athlete.displayName + ' ' + (l.team?.abbreviation || '')).toLowerCase().includes(q)));
     const lim = (q || posF || teamF) ? 200 : shown;
@@ -541,6 +565,7 @@ async function leaders(cat) {
   document.getElementById('lteam').onchange = e => { teamF = e.target.value; render(); };
   view.querySelectorAll('[data-pos]').forEach(b => b.onclick = () => { posF = b.dataset.pos; view.querySelectorAll('[data-pos]').forEach(x => x.classList.toggle('on', x === b)); render(); });
   view.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { const g = groups.find(x => x[0] === b.dataset.g); if (g) location.hash = 'leaders/' + g[1][0].name; });
+  if (lb.games.length) poll(() => leaders(cat));
 }
 
 /* ---------- players (search) ---------- */
@@ -577,11 +602,22 @@ async function player(id, tab = 'season') {
     const labels = gl.labels || [], names = gl.names || [];
     const rows = gl.seasonTypes.flatMap(s => (s.categories || []).flatMap(c => (c.events || []).map(e => ({ ...gl.events[e.eventId], stats: e.stats }))));
     rows.sort((a, b) => (a.week ?? 0) - (b.week ?? 0));
-    const totals = gl.seasonTypes[0]?.categories?.[0]?.totals;
-    glHTML = `<div class="panel"><h3>${SEASON} game log</h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opp</th><th>Result</th>${labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>
+    let totals = gl.seasonTypes[0]?.categories?.[0]?.totals;
+    // live game not yet in the log: add a row from the box score and bump the totals
+    const lb = isCur() ? await liveBox().catch(() => ({ players: {} })) : { players: {} };
+    const lrec = lb.players[String(id)]; let liveRow = '';
+    if (lrec && !rows.some(r => String(r.id) === String(lrec.ev.id))) {
+      const vals = names.map(n => { const key = n === 'interceptions' && /passing/i.test(gl.categories?.[0]?.name || '') ? 'interceptions_thrown' : n; const v = liveVal(lrec, key); return LIVE_MAP[key] ? v : null; });
+      const c = lrec.ev.competitions[0]; const me = c.competitors.find(x => x.team.id === lrec.team.id), op = c.competitors.find(x => x.team.id !== lrec.team.id);
+      liveRow = `<tr class="hl" data-g="${esc(lrec.ev.id)}" style="cursor:pointer"><td class="num">${esc(lrec.ev.week?.number ?? '')}</td><td class="tm"><img src="${esc(op?.team?.logo || '')}" alt="">${me?.homeAway === 'home' ? 'vs' : '@'} ${esc(op?.team?.abbreviation || '')}</td><td><span class="dot"></span><span class="muted num">${esc(me?.score)}–${esc(op?.score)} · ${esc(lrec.ev.status.type.shortDetail)}</span></td>${vals.map(v => `<td class="num">${v == null ? '–' : esc(v)}</td>`).join('')}</tr>`;
+      if (totals) totals = totals.map((t, i) => vals[i] == null ? t : (num(t) + vals[i]).toFixed(/\./.test(String(t)) ? 1 : 0));
+    }
+    glHTML = `<div class="panel"><h3>${SEASON} game log${liveRow ? '<span class="pill"><span class="pos"><span class="dot"></span>live game included</span></span>' : ''}</h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opp</th><th>Result</th>${labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>
       ${rows.map(r => `<tr class="clk" data-g="${esc(r.id)}"><td class="num">${esc(r.week)}</td><td class="tm"><img src="${esc(r.opponent?.logo)}" alt="">${esc(r.atVs)} ${esc(r.opponent?.abbreviation)}</td><td><span class="res ${esc(r.gameResult)}">${esc(r.gameResult)}</span> <span class="muted num">${esc(r.score)}</span></td>${(r.stats || []).map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}
-      ${totals ? `<tr class="hl"><td colspan="3"><b>Season</b></td>${totals.map(v => `<td class="num"><b>${esc(v)}</b></td>`).join('')}</tr>` : ''}
+      ${liveRow}
+      ${totals ? `<tr class="hl"><td colspan="3"><b>Season${liveRow ? ' <span class="muted" style="font-weight:400">incl. live</span>' : ''}</b></td>${totals.map(v => `<td class="num"><b>${esc(v)}</b></td>`).join('')}</tr>` : ''}
     </tbody></table></div></div>`;
+    if (liveRow && !refreshTimer) poll(() => player(id, tab));
     const ki = Math.max(0, names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade/i.test(n) && !/perGame|avg|long/i.test(n)));
     if (rows.length >= 2) {
       trendHTML = `<div class="panel"><h3>${esc(gl.displayNames?.[ki] || labels[ki] || 'Trend')} by week</h3><div class="chart">${lineChart([{ v: rows.map(r => num(r.stats?.[ki])), cls: 'lA', area: true }], rows.map(r => 'W' + r.week))}</div></div>`;
@@ -1000,7 +1036,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.10';
+const APP_VERSION = '7.11';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });

@@ -442,3 +442,5 @@ nav.bottom{display:none}
 
 .ppick .dd{z-index:40}
 .ppick .dd a{color:var(--fg)}
+
+.livetag{display:block;font-size:10px;color:var(--win);font-family:var(--body);font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin-top:3px}
