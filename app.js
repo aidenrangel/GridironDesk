@@ -223,20 +223,25 @@ document.getElementById('theme').onclick = () => { const dark = root.dataset.the
 
 const gs = document.getElementById('gs'), gsdd = document.getElementById('gsdd'); let gsSel = 0;
 document.addEventListener('keydown', e => { if (e.key === '/' && document.activeElement !== gs && !/input|select|textarea/i.test(document.activeElement.tagName)) { e.preventDefault(); gs.focus(); } if (e.key === 'Escape') { gsdd.hidden = true; gs.blur(); } });
+let gsTimer, gsSeq = 0;
 async function globalSearch() {
   const q = gs.value.trim().toLowerCase(); if (q.length < 2) { gsdd.hidden = true; return; }
+  const seq = ++gsSeq;
   const idx = await teamsIndex().catch(() => ({}));
-  const teams = Object.values(idx).filter(t => (t.displayName + ' ' + t.abbreviation + ' ' + (t.location || '')).toLowerCase().includes(q)).slice(0, 5);
-  const players = rosterIndex ? rosterIndex.filter(p => p.name.toLowerCase().includes(q)).slice(0, 8) : [];
-  let html = '';
-  if (teams.length) html += `<div class="hd">Teams</div>` + teams.map(t => `<a href="#team/${esc(t.id)}"><img src="${esc(logo(t))}" alt="">${esc(t.displayName)}<small>${esc(t.stats?.find(s => s.name === 'overall')?.displayValue || '')}</small></a>`).join('');
-  if (players.length) html += `<div class="hd">Players</div>` + players.map(p => `<a href="#player/${esc(p.id)}"><img class="hs" src="${esc(p.hs)}" alt="">${esc(p.name)}<small>${esc(p.pos)} · ${esc(p.team.abbreviation)}</small></a>`).join('');
-  if (!rosterIndex) html += `<a href="#players/${encodeURIComponent(gs.value.trim())}" class="lnk">Search all players for "${esc(gs.value.trim())}" →</a>`;
-  gsdd.innerHTML = html || '<div class="hd">No matches</div>'; gsdd.hidden = false; gsSel = 0; hl();
-  if (!rosterIndex) allRosters().then(() => { if (!gsdd.hidden) globalSearch(); });
+  const teams = Object.values(idx).filter(t => (t.displayName + ' ' + t.abbreviation + ' ' + (t.location || '')).toLowerCase().includes(q)).slice(0, 4);
+  const render = (players, loading) => { let html = '';
+    if (teams.length) html += `<div class="hd">Teams</div>` + teams.map(t => `<a href="#team/${esc(t.id)}"><img src="${esc(logo(t))}" alt="">${esc(t.displayName)}<small>${esc(t.stats?.find(s => s.name === 'overall')?.displayValue || '')}</small></a>`).join('');
+    if (players.length) html += `<div class="hd">Players</div>` + players.map(p => `<a href="#player/${esc(p.id)}"><img class="hs" src="${esc(p.hs)}" alt="">${esc(p.name)}<small>${esc(p.sub)}</small></a>`).join('');
+    if (loading) html += '<div class="hd">Searching all players…</div>';
+    html += `<a href="#players/${encodeURIComponent(gs.value.trim())}" class="lnk">See all results for "${esc(gs.value.trim())}" →</a>`;
+    gsdd.innerHTML = html; gsdd.hidden = false; gsSel = Math.min(gsSel, gsdd.querySelectorAll('a').length - 1); hl(); };
+  render(rosterIndex ? rosterIndex.filter(p => p.name.toLowerCase().includes(q)).slice(0, 5).map(p => ({ id: p.id, name: p.name, sub: `${p.pos} · ${p.team.abbreviation}`, hs: p.hs })) : [], true);
+  const hits = await searchAthletes(q, 8).catch(() => []);
+  if (seq !== gsSeq) return;
+  render(hits, false);
 }
 const hl = () => { const as = gsdd.querySelectorAll('a'); as.forEach((a, i) => a.classList.toggle('sel', i === gsSel)); };
-gs.oninput = globalSearch; gs.onfocus = () => { if (gs.value.trim().length >= 2) globalSearch(); };
+gs.oninput = () => { clearTimeout(gsTimer); gsTimer = setTimeout(globalSearch, 220); }; gs.onfocus = () => { if (gs.value.trim().length >= 2) globalSearch(); };
 gs.onkeydown = e => { const as = gsdd.querySelectorAll('a'); if (e.key === 'ArrowDown') { gsSel = Math.min(gsSel + 1, as.length - 1); hl(); e.preventDefault(); } else if (e.key === 'ArrowUp') { gsSel = Math.max(gsSel - 1, 0); hl(); e.preventDefault(); } else if (e.key === 'Enter' && as[gsSel]) { location.hash = as[gsSel].getAttribute('href'); gsdd.hidden = true; gs.blur(); } };
 document.addEventListener('click', e => { if (!e.target.closest('.search')) gsdd.hidden = true; if (e.target.closest('#gsdd a')) { gsdd.hidden = true; gs.value = ''; } });
 document.getElementById('moreBtn').onclick = e => { e.preventDefault(); const old = document.querySelector('.more'); if (old) { old.remove(); return; }
@@ -539,19 +544,26 @@ async function leaders(cat) {
 
 /* ---------- players (search) ---------- */
 async function players(q0) {
-  view.innerHTML = `<div class="bar"><div><h1>Players</h1><h2>Search every active roster</h2></div><input id="ps" placeholder="Name, team or position (e.g. Mahomes, KC, WR)" aria-label="Search players" style="min-width:min(100%,340px)"></div>
+  view.innerHTML = `<div class="bar"><div><h1>Players</h1><h2>Current rosters plus every player in ESPN's database (game logs from 2000)</h2></div><input id="ps" placeholder="Name, team or position (e.g. Mahomes, KC, WR)" aria-label="Search players" style="min-width:min(100%,340px)"></div>
     <div class="prog" id="rp"><i style="width:0"></i></div>
     <div class="panel" style="margin-top:14px"><h3 id="pcount">Loading rosters…</h3><div class="plist" id="plist"></div></div>`;
   const input = document.getElementById('ps'); input.value = decodeURIComponent(q0 || ''); input.focus();
   const list = await allRosters(p => { const b = document.querySelector('#rp i'); if (b) b.style.width = p * 100 + '%'; });
   document.getElementById('rp')?.remove();
-  const render = () => {
-    const q = input.value.trim().toLowerCase(); const el = document.getElementById('plist'); if (!el) return;
+  let seq = 0, timer;
+  const render = async () => {
+    const q = input.value.trim().toLowerCase(); const el = document.getElementById('plist'); if (!el) return; const my = ++seq;
     const hits = q ? list.filter(p => (p.name + ' ' + p.team.abbreviation + ' ' + p.team.displayName + ' ' + p.pos).toLowerCase().includes(q)) : list.filter(p => isFav(p.team.id));
-    document.getElementById('pcount').textContent = q ? `${hits.length} players` : favs.length ? `${hits.length} on your teams` : `${list.length} players loaded · start typing`;
-    el.innerHTML = hits.slice(0, 80).map(p => `<a href="#player/${esc(p.id)}"><img src="${esc(p.hs)}" alt="" loading="lazy"><span><b>${esc(p.name)}</b> <span class="muted">#${esc(p.jersey)} ${esc(p.pos)} · ${esc(p.team.displayName)}</span>${p.inj ? ' ' + injTag(p.inj) : ''}</span><img src="${esc(logo(p.team))}" alt="" style="border-radius:0;object-fit:contain"></a>`).join('');
+    document.getElementById('pcount').textContent = q ? `${hits.length} on current rosters` : favs.length ? `${hits.length} on your teams` : `${list.length} players loaded · type a name (current or past players)`;
+    const rowHTML = p => `<a href="#player/${esc(p.id)}"><img src="${esc(p.hs)}" alt="" loading="lazy"><span><b>${esc(p.name)}</b> <span class="muted">#${esc(p.jersey)} ${esc(p.pos)} · ${esc(p.team.displayName)}</span>${p.inj ? ' ' + injTag(p.inj) : ''}</span><img src="${esc(logo(p.team))}" alt="" style="border-radius:0;object-fit:contain"></a>`;
+    el.innerHTML = hits.slice(0, 80).map(rowHTML).join('') + (q.length >= 2 ? '<div class="hd" id="alltime" style="padding:10px 16px;color:var(--muted);font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;background:var(--panel-2)">Searching all players since 2000…</div>' : '');
+    if (q.length < 2) return;
+    const seenIds = new Set(hits.map(p => p.id));
+    const remote = (await searchAthletes(q, 20).catch(() => [])).filter(p => !seenIds.has(p.id));
+    if (my !== seq) return; const at = document.getElementById('alltime'); if (!at) return;
+    at.outerHTML = remote.length ? `<div class="hd" style="padding:10px 16px;color:var(--muted);font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;background:var(--panel-2)">All-time players</div>` + remote.map(p => `<a href="#player/${esc(p.id)}"><img src="${esc(p.hs)}" alt="" loading="lazy"><span><b>${esc(p.name)}</b> <span class="muted">${esc(p.sub)}</span></span><span class="tag">past / other</span></a>`).join('') : (hits.length ? '' : '<div class="empty">No players found. Try a last name.</div>');
   };
-  render(); input.oninput = render;
+  render(); input.oninput = () => { clearTimeout(timer); timer = setTimeout(render, 220); };
 }
 
 /* ---------- player page ---------- */
@@ -872,13 +884,13 @@ function fillQBR(cat) {
 const qbrNote = parts => `<p class="note" style="padding:0 16px 12px;margin:0">≈ Career QBR is a games-weighted average of season QBRs${parts.length ? ' (' + parts.map(esc).join('; ') + ')' : ''}. ESPN doesn't publish a true career QBR because it is built from play-by-play data.</p>`;
 /* ---------- player comparison (any player, any season) ---------- */
 // ESPN's search finds retired and past-season players that current rosters don't have
-async function searchAthletes(q) {
+async function searchAthletes(q, limit = 10) {
   const list = rosterIndex || await allRosters().catch(() => []);
   const local = list.filter(p => p.name.toLowerCase().includes(q)).slice(0, 6).map(p => ({ id: p.id, name: p.name, sub: `${p.pos} · ${p.team.abbreviation}`, hs: p.hs }));
   let remote = [];
   try { const d = await getJSON(`https://site.web.api.espn.com/apis/search/v2?query=${encodeURIComponent(q)}&limit=12`, 600000);
     remote = (d.results || []).flatMap(r => r.contents || []).filter(c => /^s:20~l:28~a:\d+/.test(c.uid || '')).map(c => ({ id: c.uid.match(/a:(\d+)/)[1], name: c.displayName, sub: c.subtitle || c.description || 'NFL', hs: c.image?.default || '' })); } catch {}
-  const seen = new Set(); return [...local, ...remote].filter(x => !seen.has(x.id) && seen.add(x.id)).slice(0, 10);
+  const seen = new Set(); return [...local, ...remote].filter(x => !seen.has(x.id) && seen.add(x.id)).slice(0, limit);
 }
 function parseSide(v) { const [id, yr] = String(v || '').split('-'); return { id: id || '', yr: Number(yr) || SEASON }; }
 async function pcompare(aV, bV, mode = 'season') {
@@ -987,7 +999,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '7.7';
+const APP_VERSION = '7.8';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
