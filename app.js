@@ -108,9 +108,12 @@ async function teamRoster(id) {
   const r = await getJSON(`${WEB}/teams/${id}/roster`, 3600000);
   return (r.positionGroups || []).map(g => ({ position: g.displayName || g.type, items: (g.athletes || []).map(p => ({ ...p, injuries: p.status && !/active/i.test(p.status.name || p.status) ? [{ status: p.status.name || String(p.status) }] : [] })) }));
 }
+/* ESPN ranks every stat high-to-low; for these, lower is better, so the rank is flipped (1 = fewest). */
+const LOWER_BETTER = new Set(['passing.sacks','passing.interceptions','miscellaneous.totalGiveaways','general.totalPenaltyYards','general.totalPenalties','defensive.pointsAllowedPerGame','miscellaneous.thirdDownConvPctAllowed','general.fumblesLost','general.fumbles']);
+const NTEAMS = 32;
 async function teamStats(id) {
   try { const d = await getJSON(`${CORE}/seasons/${SEASON}/types/2/teams/${id}/statistics`, 600000); const out = {};
-    (d.splits?.categories || []).forEach(c => c.stats.forEach(s => { const k = c.name + '.' + s.name; out[k] = s; if (!out[s.name]) out[s.name] = s; })); return out;
+    (d.splits?.categories || []).forEach(c => c.stats.forEach(s => { const k = c.name + '.' + s.name; const v = LOWER_BETTER.has(k) && s.rank ? { ...s, rank: NTEAMS + 1 - s.rank, rankDisplayValue: ord(NTEAMS + 1 - s.rank) } : s; out[k] = v; if (!out[s.name]) out[s.name] = v; })); return out;
   } catch (e) { console.warn('team stats unavailable', e.message); return null; }
 }
 async function allRosters(onProgress) {
@@ -893,7 +896,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '6.1';
+const APP_VERSION = '6.2';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
@@ -934,6 +937,8 @@ async function teamstats(sortKey) {
   const rows = (await Promise.all(ids.map(async id => { const st = await teamStats(id); done++; const b = document.querySelector('#tsp i'); if (b) b.style.width = done / ids.length * 100 + '%'; return st ? { id, team: idx[id], st } : null; }))).filter(Boolean);
   if (!rows.length) { view.innerHTML = '<div class="panel"><div class="empty">ESPN\'s team statistics feed is unavailable right now.</div></div>'; return; }
   const cols = TSTATS.filter(([, k]) => rows.some(r => r.st[k]));
+  // exact ranks from the full table (handles ties better than ESPN's flipped rank)
+  cols.forEach(([, k]) => { const lower = LOWER_BETTER.has(k); const sorted = rows.filter(r => r.st[k]).sort((a, b) => lower ? num(a.st[k].value) - num(b.st[k].value) : num(b.st[k].value) - num(a.st[k].value)); let rank = 0, prev = null; sorted.forEach((r, i) => { const v = num(r.st[k].value); if (v !== prev) { rank = i + 1; prev = v; } r.st[k] = { ...r.st[k], rank }; }); });
   view.innerHTML = `<div class="bar"><div><h1>Team stats</h1><h2>${SEASON} regular season · click a column to sort · rank in small type</h2></div></div>
     <div class="panel"><div class="tw"><table id="tst"><thead><tr><th class="sort" data-k="team">Team</th>${cols.map(([l, k]) => `<th class="num sort" data-k="${k}">${l}</th>`).join('')}</tr></thead><tbody></tbody></table></div></div>`;
   const colFns = { team: r => r.team.displayName }; cols.forEach(([, k]) => colFns[k] = r => num(r.st[k]?.value));
