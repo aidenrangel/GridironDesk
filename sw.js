@@ -1,7 +1,7 @@
 /* Gridiron Desk service worker.
    App files: network-first (so uploads show up on the next load), cached copy only when offline.
    ESPN feeds: network-first, last copy kept for offline viewing. */
-const VERSION = 'v7.8';
+const VERSION = 'v7.9';
 const SHELL = 'gd-shell-' + VERSION, DATA = 'gd-data-' + VERSION;
 const FILES = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).catch(() => {}).then(() => self.skipWaiting())); });
