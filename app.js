@@ -776,7 +776,7 @@ async function gamecast(id, tab = 'box') {
       </div>`;
     if (S.pre) pregameHTML(S).then(html => { const el = document.getElementById('pregame'); if (el) { el.innerHTML = html; tickCountdown(); } }).catch(() => {});
     const hb = document.getElementById('h2hbtn'); if (hb) hb.onclick = () => mountH2H(document.getElementById('h2hpanel'), S.a.team, S.h.team);
-    view.querySelectorAll('#gctabs [data-tab]').forEach(b => b.onclick = () => { GC.tab = b.dataset.tab; view.querySelectorAll('#gctabs button').forEach(x => x.classList.toggle('on', x === b)); renderGameTab(S); });
+    view.querySelectorAll('#gctabs [data-tab]').forEach(b => b.onclick = () => { GC.tab = b.dataset.tab; history.replaceState(null, '', `#game/${id}/${b.dataset.tab}`); view.querySelectorAll('#gctabs button').forEach(x => x.classList.toggle('on', x === b)); renderGameTab(GC.S || S); });
     GC.first = false;
   } else {
     // incremental update: patch what changed instead of rebuilding
@@ -796,7 +796,8 @@ async function gamecast(id, tab = 'box') {
     newIds.forEach(pid => { const p = S.plays.find(x => x.id === pid); const k = p && playKind(p); if (k === 'turnover') liveAlert('Turnover', p.text, 'turnover'); });
   }
   renderGameTab(S); syncClock(S.id, S);
-  if (S.live) poll(() => gamecast(id, tab), true); else if (S.pre) { const ms = new Date(S.ev?.date || 0) - Date.now(); if (ms > 0 && ms < 3 * 3600000) poll(() => gamecast(id, tab), false); }
+  const curTab = () => (location.hash.split('/')[2]) || GC.tab || 'box';
+  if (S.live) poll(() => gamecast(id, curTab()), true); else if (S.pre) { const ms = new Date(S.ev?.date || 0) - Date.now(); if (ms > 0 && ms < 3 * 3600000) poll(() => gamecast(id, curTab()), false); }
 }
 function renderGameTab(S) {
   const el = document.getElementById('gtab'); if (!el) return; const s = S.s;
@@ -1104,7 +1105,7 @@ async function player(id, tab = 'season') {
       ${liveRow}
       ${totals ? `<tr class="hl"><td colspan="3"><b>Season${liveRow ? ' <span class="muted" style="font-weight:400">incl. live</span>' : ''}</b></td>${totals.map(v => `<td class="num"><b>${esc(v)}</b></td>`).join('')}</tr>` : ''}
     </tbody></table></div></div>`;
-    if (liveRow && !refreshTimer) poll(() => player(id, tab), false);
+    if (liveRow && !refreshTimer) poll(() => player(id, (location.hash.split('/')[2]) || 'season'), false);
     const ki = Math.max(0, names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade/i.test(n) && !/perGame|avg|long/i.test(n)));
     if (rows.length >= 2) {
       const numCols = labels.map((l, i) => [String(i), gl.displayNames?.[i] || l]).filter(([i]) => rows.some(r => /^-?\d/.test(String(r.stats?.[i] ?? '')) && !/\//.test(String(r.stats?.[i]))));
@@ -1171,7 +1172,7 @@ async function team(id, tab = 'schedule') {
   const sd = { events: await teamSchedule(id).catch(e => { console.warn(e); return []; }) };
   const stnd = cache.get(`${API2}/standings?season=${SEASON}&level=3`)?.v || null;
   const inj = cache.get(`${API}/injuries`)?.v || null;
-  if ((!stnd || !inj) && !team.warmed) { team.warmed = true; Promise.all([standingsL3().catch(() => null), getJSON(`${API}/injuries`, 300000).catch(() => null)]).then(() => { if (location.hash.startsWith(`#team/${id}`)) team(id, tab).catch(() => {}); }); }
+  if ((!stnd || !inj) && !team.warmed) { team.warmed = true; Promise.all([standingsL3().catch(() => null), getJSON(`${API}/injuries`, 300000).catch(() => null)]).then(() => { if (location.hash.startsWith(`#team/${id}`)) team(id, (location.hash.split('/')[2]) || tab).catch(() => {}); }); }
   const rec = t.record?.items?.find(r => r.type === 'total') || t.record?.items?.[0];
   const rs = n => rec?.stats?.find(s => s.name === n)?.displayValue ?? '–';
   const games = (sd.events || []).map(ev => {
@@ -1824,7 +1825,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '11.2';
+const APP_VERSION = '11.3';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
