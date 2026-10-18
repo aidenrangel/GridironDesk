@@ -948,7 +948,7 @@ async function ratingModel() {
     if (c.status?.type?.completed) { const as = scoreOf(a), hs = scoreOf(h); const m = hs - as - (neutral ? 0 : hfa), cm = Math.max(-CAP, Math.min(CAP, m));
       if (T[h.team.id]) per[h.team.id].push({ opp: a.team.id, m: cm, raw: hs - as, wk: ev.week?.number || 0 }); if (T[a.team.id]) per[a.team.id].push({ opp: h.team.id, m: -cm, raw: as - hs, wk: ev.week?.number || 0 });
       if (T[a.team.id] && T[h.team.id]) played.push({ a: a.team.id, h: h.team.id, as, hs, neutral, ev }); }
-    else if (T[a.team.id] && T[h.team.id]) remaining.push({ a: a.team.id, h: h.team.id, wk: ev.week?.number, neutral, ev, pre: c.status?.type?.state === 'pre' }); });
+    else remaining.push({ a: a.team.id, h: h.team.id, wk: ev.week?.number, neutral, ev, pre: c.status?.type?.state === 'pre', teams: { [a.team.id]: a.team, [h.team.id]: h.team }, unrated: !(T[a.team.id] && T[h.team.id]) }); });
   // preseason prior (college): the AP/CFP poll stands in for team strength until each team has ~4 results
   const prior = {}; if (rkPoll) { const poll = (rkPoll.rankings || []).find(p => /ap/i.test(p.type)) || (rkPoll.rankings || [])[0]; (poll?.ranks || []).forEach(r => { if (T[r.team?.id]) prior[r.team.id] = (26 - r.current) * 0.9; }); }
   const wP = id => rkPoll ? Math.max(0, 4 - per[id].length) : 0;
@@ -968,8 +968,10 @@ async function ratingModel() {
   const AVG = cnt ? tot / cnt : 22; const OFF = {}, DEF = {}; ids.forEach(id => { OFF[id] = 0; DEF[id] = 0; }); const UO = isCFB() ? -14 : 0, UD = isCFB() ? 16 : 0;
   for (let it = 0; it < 300; it++) { let d = 0; ids.forEach(id => { const gs = pts[id]; if (!gs.length) return; const o = gs.reduce((n, g) => n + (g.f - AVG - (DEF[g.opp] ?? UD)), 0) / (gs.length + K), df = gs.reduce((n, g) => n + (g.ag - AVG - (OFF[g.opp] ?? UO)), 0) / (gs.length + K); d += Math.abs(o - OFF[id]) + Math.abs(df - DEF[id]); OFF[id] = o; DEF[id] = df; }); if (d < 1e-4) break; }
   ids.forEach(id => { const n = pts[id].length, sh = n / (n + 1); T[id].off = OFF[id] * sh; T[id].def = DEF[id] * sh; T[id].avgPts = AVG; });
-  const pWin = (home, away, neutral = false) => 1 / (1 + Math.exp(-((T[home].rating - T[away].rating) + (neutral ? 0 : hfa)) / PWIN_SCALE()));
-  const v = { T, ids, played, remaining, pWin, games: all, stnd }; ratingCache = { key, t: Date.now(), v }; logPredictions(v); snapshotRatings(v); return v;
+  const rt = id => T[id]?.rating ?? UNRATED;
+  const pWin = (home, away, neutral = false) => 1 / (1 + Math.exp(-((rt(home) - rt(away)) + (neutral ? 0 : hfa)) / PWIN_SCALE()));
+  const teamOf = (id, g) => T[id]?.team || g?.teams?.[id] || { id, abbreviation: 'FCS', displayName: 'FCS opponent' };
+  const v = { T, ids, played, remaining, pWin, rt, teamOf, games: all, stnd }; ratingCache = { key, t: Date.now(), v }; logPredictions(v); snapshotRatings(v); return v;
 }
 async function power() {
   const M = await ratingModel();
@@ -1324,11 +1326,11 @@ async function team(id, tab = 'schedule') {
   wire();
   if (isCur()) buildModel().then(M => { const el = document.getElementById('remsched'); if (!el) return; const rem = M.remaining.filter(g => g.a === String(id) || g.h === String(id)).sort((x, y) => (x.wk || 0) - (y.wk || 0));
     const rows = rem.map(g => { const home = g.h === String(id); const op = home ? g.a : g.h; const p = home ? M.pWin(g.h, g.a, g.neutral) : 1 - M.pWin(g.h, g.a, g.neutral); return { g, home, op, p }; });
-    const xw = rows.reduce((n, r) => n + r.p, 0); const sos = rows.length ? rows.reduce((n, r) => n + M.T[r.op].rating, 0) / rows.length : 0;
+    const xw = rows.reduce((n, r) => n + r.p, 0); const sos = rows.length ? rows.reduce((n, r) => n + M.rt(r.op), 0) / rows.length : 0;
     const hist = store.get(LK('oddsHist:' + SEASON), {}); const pts = Object.keys(hist).map(Number).sort((a, b) => a - b).filter(w => hist[w][id] != null);
     const me = M.T[String(id)]; const oR = me ? [...M.ids].sort((a, b) => M.T[b].off - M.T[a].off).indexOf(String(id)) + 1 : 0, dR = me ? [...M.ids].sort((a, b) => M.T[a].def - M.T[b].def).indexOf(String(id)) + 1 : 0;
     const ratingBox = me ? `<div class="panel"><h3>Power index<span class="pill">rank ${[...M.ids].sort((a, b) => M.T[b].rating - M.T[a].rating).indexOf(String(id)) + 1} of ${M.ids.length}</span></h3><div class="kpis"><div class="kpi"><small>Rating</small><b class="${me.rating >= 0 ? 'pos' : 'neg'}">${sgn(me.rating.toFixed(1))}</b></div><div class="kpi"><small>Offense</small><b>${sgn(me.off.toFixed(1))} <small class="muted">${ord(oR)}</small></b></div><div class="kpi"><small>Defense</small><b>${sgn((-me.def).toFixed(1))} <small class="muted">${ord(dR)}</small></b></div><div class="kpi"><small>SOS</small><b>${sgn(me.sos.toFixed(1))}</b></div></div></div>` : '';
-    el.outerHTML = ratingBox + ratingHistoryHTML(String(id)) + '<div id="finish"></div><div id="changes"></div>' + (rows.length ? `<div class="panel"><h3>Remaining schedule<span class="pill">${xw.toFixed(1)} proj. wins · opp rating ${sgn(sos.toFixed(1))}</span></h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opponent</th><th class="num">Opp rtg</th><th class="num">Win %</th></tr></thead><tbody>${rows.map(r => `<tr class="clk" data-g="${esc(r.g.ev.id)}"><td class="num">${esc(r.g.wk)}</td><td class="tm"><img src="${esc(logo(M.T[r.op].team))}" alt="">${r.home ? 'vs' : '@'} ${esc(M.T[r.op].team.abbreviation)}</td><td class="num ${M.T[r.op].rating > 0 ? 'neg' : 'pos'}">${sgn(M.T[r.op].rating.toFixed(1))}</td><td class="num ${r.p >= .6 ? 'pos' : r.p <= .4 ? 'neg' : ''}"><b>${Math.round(r.p * 100)}%</b></td></tr>`).join('')}</tbody></table></div></div>` : '')
+    el.outerHTML = ratingBox + ratingHistoryHTML(String(id)) + '<div id="finish"></div><div id="changes"></div>' + (rows.length ? `<div class="panel"><h3>Remaining schedule<span class="pill">${xw.toFixed(1)} proj. wins · opp rating ${sgn(sos.toFixed(1))}</span></h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opponent</th><th class="num">Opp rtg</th><th class="num">Win %</th></tr></thead><tbody>${rows.map(r => `<tr class="clk" data-g="${esc(r.g.ev.id)}"><td class="num">${esc(r.g.wk)}</td><td class="tm"><img src="${esc(logo(M.teamOf(r.op, r.g)))}" alt="">${r.home ? 'vs' : '@'} ${esc(M.teamOf(r.op, r.g).abbreviation)}${M.T[r.op] ? '' : ' <span class="tag" style="font-size:10px">FCS</span>'}</td><td class="num ${M.rt(r.op) > 0 ? 'neg' : 'pos'}">${sgn(M.rt(r.op).toFixed(1))}</td><td class="num ${r.p >= .6 ? 'pos' : r.p <= .4 ? 'neg' : ''}"><b>${Math.round(r.p * 100)}%</b></td></tr>`).join('')}</tbody></table></div></div>` : '')
       + (pts.length >= 2 ? `<div class="panel"><h3>Playoff odds over time</h3><div class="chart">${lineChart([{ v: pts.map(w => hist[w][id] * 100), cls: 'lA', area: true }], pts.map(w => 'W' + w))}</div><p class="note" style="padding:0 14px 10px;margin:0">From your visits to the Odds page each week.</p></div>` : '');
     wire();
     simSeason(M, 1500).then(out => { const f = document.getElementById('finish'); if (f) f.outerHTML = finishHTML(out, String(id), 1500, M.T); }).catch(() => {});
@@ -1450,7 +1452,7 @@ async function simSeason(M, N, onProgress) {
   const run = (from, to) => { for (let n = from; n < to; n++) {
     const W = {}, PD = {}, H = {}; ids.forEach(id => { W[id] = T[id].w + T[id].t / 2; PD[id] = T[id].pf - T[id].pa; });
     Object.entries(h2hBase).forEach(([k, v]) => H[k] = [...v]);
-    remaining.forEach(g => { const ph = pWin(g.h, g.a, g.neutral); const k = g.a + '|' + g.h; (H[k] ||= [0, 0]); if (Math.random() < ph) { W[g.h]++; PD[g.h] += 7; PD[g.a] -= 7; H[k][1]++; } else { W[g.a]++; PD[g.a] += 7; PD[g.h] -= 7; H[k][0]++; } });
+    remaining.forEach(g => { const ph = pWin(g.h, g.a, g.neutral); const k = g.a + '|' + g.h; (H[k] ||= [0, 0]); if (Math.random() < ph) { if (W[g.h] != null) { W[g.h]++; PD[g.h] += 7; } if (W[g.a] != null) PD[g.a] -= 7; H[k][1]++; } else { if (W[g.a] != null) { W[g.a]++; PD[g.a] += 7; } if (W[g.h] != null) PD[g.h] -= 7; H[k][0]++; } });
     const cmp = (x, y) => { if (W[y] !== W[x]) return W[y] - W[x]; const k1 = H[x + '|' + y] || [0, 0], k2 = H[y + '|' + x] || [0, 0]; const xw = k1[0] + k2[1], yw = k1[1] + k2[0]; if (xw !== yw) return yw - xw; return (PD[y] - PD[x]) || (Math.random() - .5); };
     Object.values(confs).forEach(cids => { const winners = Object.entries(divs).filter(([k]) => k.startsWith(T[cids[0]].conf + '/')).map(([, m]) => [...m].sort(cmp)[0]).sort(cmp);
       const wc = cids.filter(id => !winners.includes(id)).sort(cmp).slice(0, 3); const inP = [...winners, ...wc];
@@ -1590,13 +1592,13 @@ async function sos() {
   const M = await buildModel(); const T = M.T; const calF = await seasonCalendar().catch(() => null);
   const pct = id => { const r = T[id]; const g = r.w + r.l + r.t; return g ? (r.w + r.t / 2) / g : .5; };
   const rows = M.ids.map(id => { const pl = M.played.filter(g => g.a === id || g.h === id).map(g => g.a === id ? g.h : g.a); const rem = M.remaining.filter(g => g.a === id || g.h === id).sort((x, y) => (x.wk || 0) - (y.wk || 0));
-    const remRows = rem.map(g => { const home = g.h === id; const op = home ? g.a : g.h; return { op, home, wk: g.wk, p: home ? M.pWin(g.h, g.a, g.neutral) : 1 - M.pWin(g.h, g.a, g.neutral), rt: T[op].rating, ev: g.ev }; });
+    const remRows = rem.map(g => { const home = g.h === id; const op = home ? g.a : g.h; return { op, home, wk: g.wk, p: home ? M.pWin(g.h, g.a, g.neutral) : 1 - M.pWin(g.h, g.a, g.neutral), rt: M.rt(op), ev: g.ev, g }; });
     const avg = arr => arr.length ? arr.reduce((n, x) => n + x, 0) / arr.length : null;
     let hard = null; for (let i = 0; i + 3 <= remRows.length; i++) { const s = avg(remRows.slice(i, i + 3).map(x => x.rt)); if (hard == null || s > hard.v) hard = { v: s, from: remRows[i].wk, to: remRows[i + 2].wk }; }
     return { id, team: T[id].team, conf: T[id].conf, rec: `${T[id].w}-${T[id].l}${T[id].t ? '-' + T[id].t : ''}`, pastPct: avg(pl.map(pct)), pastRt: avg(pl.map(o => T[o].rating)), remRt: avg(remRows.map(x => x.rt)), remN: remRows.length, projW: T[id].w + T[id].t / 2 + remRows.reduce((n, x) => n + x.p, 0), hard, remRows, rating: T[id].rating }; });
   const rank = (k, desc = true) => { const s = [...rows].filter(r => r[k] != null).sort((a, b) => desc ? b[k] - a[k] : a[k] - b[k]); s.forEach((r, i) => r[k + 'Rank'] = i + 1); };
   rank('pastRt'); rank('remRt'); rank('pastPct');
-  const chip = x => `<a class="sch ${x.p >= .65 ? 'ez' : x.p <= .35 ? 'hd' : ''}" href="#game/${esc(x.ev.id)}" title="Week ${esc(x.wk)} · ${x.home ? 'vs' : '@'} ${esc(T[x.op].team.displayName)} · ${Math.round(x.p * 100)}% to win · opp rating ${sgn(x.rt.toFixed(1))}"><img src="${esc(logo(T[x.op].team))}" alt=""><small>${x.home ? '' : '@'}</small></a>`;
+  const chip = x => `<a class="sch ${x.p >= .65 ? 'ez' : x.p <= .35 ? 'hd' : ''}" href="#game/${esc(x.ev.id)}" title="Week ${esc(x.wk)} · ${x.home ? 'vs' : '@'} ${esc(M.teamOf(x.op, x.g).displayName)} · ${Math.round(x.p * 100)}% to win · opp rating ${sgn(x.rt.toFixed(1))}"><img src="${esc(logo(M.teamOf(x.op, x.g)))}" alt=""><small>${x.home ? '' : '@'}</small></a>`;
   view.innerHTML = `<div class="bar"><div><h1>Strength of schedule</h1><h2>Opponent quality so far and still to come · ratings from the Power Index model</h2></div>${calF?.cur ? `<span class="upd">Through week ${calF.cur}</span>` : ''}</div>
     <div class="panel"><h3>All ${rows.length} teams<span class="pill">click a column to sort · hover a logo for the matchup</span></h3><div class="tw"><table id="sost"><thead><tr><th class="sort" data-k="team">Team</th><th class="num sort" data-k="rec">Record</th><th class="num sort" data-k="pastPct">Opp win %<br><small>played</small></th><th class="num sort" data-k="pastRt">Opp rating<br><small>played</small></th><th class="num sort" data-k="remRt">Opp rating<br><small>remaining</small></th><th class="num sort" data-k="remN">Left</th><th class="num sort" data-k="projW">Proj. W</th><th>Hardest stretch</th><th>Remaining <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">(green = likely win, red = likely loss)</span></th></tr></thead><tbody></tbody></table></div></div>
     <p class="note">Opponent rating is the Power Index rating (0 = average; higher = tougher). Projected wins add the model's win probability for every remaining game to the current record. Hardest stretch is the toughest three consecutive remaining games.</p>`;
@@ -1618,9 +1620,9 @@ async function race() {
   const divHTML = ([key, ids]) => { const [conf, name] = key.split('/'); const sorted = [...ids].sort((a, b) => W(b) - W(a) || L(a) - L(b) || (T[b].pf - T[b].pa) - (T[a].pf - T[a].pa)); const lead = sorted[0];
     const magic = Math.max(...sorted.slice(1).map(x => remOf(x) - (W(lead) - W(x)) + 1)); const clinched = magic <= 0;
     const rows = sorted.map((id, i) => { const gb = ((W(lead) - W(id)) + (L(id) - L(lead))) / 2; const elim = remOf(id) - (W(lead) - W(id)) + 1; const eliminated = i > 0 && elim <= 0; const p = sim[id].div / N;
-      const thisWk = M.remaining.find(g => g.wk === cw && (g.a === id || g.h === id)); const opp = thisWk ? (thisWk.a === id ? thisWk.h : thisWk.a) : null;
+      const thisWk = M.remaining.find(g => g.wk === cw && (g.a === id || g.h === id)); const opp = thisWk ? (thisWk.a === id ? thisWk.h : thisWk.a) : null; const oppT = thisWk ? M.teamOf(opp, thisWk) : null;
       let note = ''; if (i === 0) note = clinched ? '<span class="tag ok">Clinched division</span>' : `Magic number <b>${magic}</b>${magic === 1 && thisWk ? ' · clinches with a win this week' : magic === 2 && thisWk ? ' · can clinch this week with a win plus a ' + esc(T[sorted[1]].team.abbreviation) + ' loss' : ''}`; else if (eliminated) note = '<span class="tag out">Eliminated from division</span>'; else { const toTie = Math.ceil(W(lead) - W(id)); note = gb === 0 ? 'Tied for the lead' : `Needs to make up <b>${gb}</b> game${gb === 1 ? '' : 's'} · ${remOf(id)} left${toTie > 0 ? ' · elimination number ' + elim : ''}`; }
-      return `<tr class="clk ${isFav(id) ? 'fav' : ''} ${i === 0 ? 'hl' : ''}" data-t="${esc(id)}"><td class="tm"><img src="${esc(logo(T[id].team))}" alt="">${esc(T[id].team.displayName)}</td><td class="num">${T[id].w}-${T[id].l}${T[id].t ? '-' + T[id].t : ''}</td><td class="num">${gb ? gb : '–'}</td><td class="num">${remOf(id)}</td><td class="num">${(sim[id].wins / N).toFixed(1)}</td><td class="num ${p >= .75 ? 'pos' : p <= .1 ? 'neg' : ''}"><b>${p >= .995 ? '>99%' : p <= .005 ? '<1%' : Math.round(p * 100) + '%'}</b></td><td class="muted" style="white-space:normal">${note}</td><td class="muted">${thisWk ? `${thisWk.h === id ? 'vs' : '@'} ${esc(T[opp].team.abbreviation)}${ids.includes(opp) ? ' <span class="tag" style="font-size:10px">div</span>' : ''}` : (cw ? 'Bye' : '')}</td></tr>`; }).join('');
+      return `<tr class="clk ${isFav(id) ? 'fav' : ''} ${i === 0 ? 'hl' : ''}" data-t="${esc(id)}"><td class="tm"><img src="${esc(logo(T[id].team))}" alt="">${esc(T[id].team.displayName)}</td><td class="num">${T[id].w}-${T[id].l}${T[id].t ? '-' + T[id].t : ''}</td><td class="num">${gb ? gb : '–'}</td><td class="num">${remOf(id)}</td><td class="num">${(sim[id].wins / N).toFixed(1)}</td><td class="num ${p >= .75 ? 'pos' : p <= .1 ? 'neg' : ''}"><b>${p >= .995 ? '>99%' : p <= .005 ? '<1%' : Math.round(p * 100) + '%'}</b></td><td class="muted" style="white-space:normal">${note}</td><td class="muted">${thisWk ? `${thisWk.h === id ? 'vs' : '@'} ${esc(oppT.abbreviation)}${ids.includes(opp) ? ' <span class="tag" style="font-size:10px">div</span>' : ''}` : (cw ? 'Bye' : '')}</td></tr>`; }).join('');
     const divGames = M.remaining.filter(g => g.wk === cw && ids.includes(g.a) && ids.includes(g.h));
     return `<div class="panel"><h3>${esc(name)}<span class="pill">${esc(conf)}${divGames.length ? ` · ${divGames.length} division game${divGames.length > 1 ? 's' : ''} this week` : ''}</span></h3><div class="tw"><table><thead><tr><th>Team</th><th class="num">W-L</th><th class="num">GB</th><th class="num">Left</th><th class="num">Proj. W</th><th class="num">Win div</th><th>Status</th><th>Week ${cw}</th></tr></thead><tbody>${rows}</tbody></table></div></div>`; };
   view.innerHTML = `<div class="bar"><div><h1>Division race</h1><h2>Games back, magic numbers and clinch scenarios · week ${cw}</h2></div><a class="chip" href="#odds">Full playoff odds →</a></div><div class="stack">${Object.entries(divs).sort(([a], [b]) => a.localeCompare(b)).map(divHTML).join('')}</div>
@@ -1711,7 +1713,7 @@ async function cfpOdds() {
   const confs = {}; ids.forEach(id => (confs[confOf(id)] ||= []).push(id));
   const run = (from, to) => { for (let n = from; n < to; n++) {
     const W = {}; ids.forEach(id => W[id] = T[id].w + T[id].t / 2);
-    M.remaining.forEach(g => { if (Math.random() < M.pWin(g.h, g.a, g.neutral)) W[g.h]++; else W[g.a]++; });
+    M.remaining.forEach(g => { if (Math.random() < M.pWin(g.h, g.a, g.neutral)) { if (W[g.h] != null) W[g.h]++; } else if (W[g.a] != null) W[g.a]++; });
     const comp = {}; ids.forEach(id => comp[id] = W[id] + T[id].rating / 6 + (prior[id] || 0) + (Math.random() - .5) * .6);
     const champs = Object.entries(confs).filter(([c, m]) => autoOk(m[0])).map(([, m]) => [...m].sort((a, b) => comp[b] - comp[a])[0]);
     champs.forEach(id => out[id].champ++);
@@ -1738,7 +1740,7 @@ async function cfpOdds() {
 const PRED_KEY = () => LK('pred:' + SEASON);
 function logPredictions(M) {
   if (!isCur()) return; try { const log = store.get(PRED_KEY(), {}); let n = 0;
-    M.remaining.forEach(g => { if (!g.pre) return; const p = M.pWin(g.h, g.a, g.neutral); const e = log[g.ev.id]; if (!e || Math.abs(e.p - p) > .002) { log[g.ev.id] = { ...(e || {}), wk: g.wk, h: g.h, a: g.a, p: Math.round(p * 1000) / 1000, t: Date.now() }; n++; } });
+    M.remaining.forEach(g => { if (!g.pre || g.unrated) return; const p = M.pWin(g.h, g.a, g.neutral); const e = log[g.ev.id]; if (!e || Math.abs(e.p - p) > .002) { log[g.ev.id] = { ...(e || {}), wk: g.wk, h: g.h, a: g.a, p: Math.round(p * 1000) / 1000, t: Date.now() }; n++; } });
     if (n) store.set(PRED_KEY(), log); } catch {}
 }
 function logEspnPrediction(evId, summary) { try { const pr = summary.predictor; const hp = num(pr?.homeTeam?.gameProjection); if (!hp) return; const log = store.get(PRED_KEY(), {}); if (log[evId] && log[evId].espn == null && summary.header?.competitions?.[0]?.status?.type?.state === 'pre') { log[evId].espn = Math.round(hp * 10) / 1000; store.set(PRED_KEY(), log); } } catch {} }
@@ -1778,7 +1780,7 @@ function signedLine(v, labels, { h = 150, w = 520 } = {}) {
 /* ---------- 5 · projected finish ---------- */
 function finishHTML(out, id, N, T) { const d = out[id]?.divW; if (!d) return ''; const ws = Object.keys(d).map(Number).sort((a, b) => a - b); const mx = Math.max(...ws.map(w => d[w])); const mode = ws.reduce((b, w) => d[w] > d[b] ? w : b, ws[0]); const total = TOTAL_GAMES(); const cur = T[id].w;
   const pAtLeast = k => ws.filter(w => w >= k).reduce((s, w) => s + d[w], 0) / N;
-  return `<div class="panel"><h3>Projected finish<span class="pill">most likely ${mode}-${total - mode}</span></h3><div class="dist">${ws.map(w => `<div class="db ${w === mode ? 'mode' : ''} ${w < cur ? 'past' : ''}"><i style="height:${d[w] / mx * 100}%"></i><b>${w}</b><small>${Math.round(d[w] / N * 100)}%</small></div>`).join('')}</div><div class="kpis" style="padding-top:0">${[Math.ceil(total * .5), Math.ceil(total * .65), Math.ceil(total * .8)].filter((v, i, a) => a.indexOf(v) === i && v >= cur).map(k => `<div class="kpi"><small>${k}+ wins</small><b>${Math.round(pAtLeast(k) * 100)}%</b></div>`).join('')}</div></div>`; }
+  return `<div class="panel"><h3>Projected finish<span class="pill">most likely ${mode}-${total - mode}</span></h3><div class="dist">${ws.map(w => `<div class="db ${w === mode ? 'mode' : ''} ${w < cur ? 'past' : ''}"><i style="height:${d[w] / mx * 100}%"></i><b>${w}</b><small>${(v => v >= .995 ? '>99' : v <= .005 ? '<1' : Math.round(v * 100))(d[w] / N)}%</small></div>`).join('')}</div><div class="kpis" style="padding-top:0">${[Math.ceil(total * .5), Math.ceil(total * .65), Math.ceil(total * .8)].filter((v, i, a) => a.indexOf(v) === i && v >= cur).map(k => `<div class="kpi"><small>${k}+ wins</small><b>${(v => v >= .995 ? '>99%' : v <= .005 ? '<1%' : Math.round(v * 100) + '%')(pAtLeast(k))}</b></div>`).join('')}</div></div>`; }
 
 /* ---------- 6 · pinned mini-scorebug ---------- */
 let pinTimer = null;
@@ -2137,7 +2139,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '13.5';
+const APP_VERSION = '13.6';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
