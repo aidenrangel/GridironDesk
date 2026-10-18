@@ -292,12 +292,12 @@ document.getElementById('moreBtn').onclick = e => { e.preventDefault(); const ol
 /* ---------- routing ---------- */
 function route() {
   const [r, a, b, c] = (location.hash.slice(1) || 'home').split('/');
-  const alias = { team: 'teams', player: 'players', pcompare: 'players', game: 'scores', odds: 'playoffs', teamstats: 'power', redzone: 'scores' };
+  const alias = { team: 'teams', player: 'players', pcompare: 'players', game: 'scores', odds: 'playoffs', teamstats: 'power', redzone: 'scores', multi: 'scores' };
   document.querySelectorAll('#nav a, #bnav a, .moremenu a').forEach(x => x.classList.toggle('on', x.dataset.r === (alias[r] || r)));
-  clearInterval(refreshTimer); refreshTimer = null; pollFn = null; document.querySelector('.more')?.remove(); if (r !== 'game' || c !== 'theater') document.body.classList.remove('theater'); document.querySelector('.moremenu')?.removeAttribute('open'); document.getElementById('gearMenu')?.removeAttribute('open');
+  clearInterval(refreshTimer); refreshTimer = null; pollFn = null; document.querySelector('.more')?.remove(); if (!((r === 'game' && c === 'theater') || (r === 'multi' && (b === 'theater' || c === 'theater')))) document.body.classList.remove('theater'); stopClocks(); closeAthCard(); document.getElementById('sbanner')?.classList.remove('show'); document.querySelector('.moremenu')?.removeAttribute('open'); document.getElementById('gearMenu')?.removeAttribute('open');
   view.innerHTML = '<div class="panel"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>';
   window.scrollTo(0, 0);
-  const pages = { home, scores, standings, playoffs, odds, power, leaders, players, player, pcompare, teams, team, compare, injuries, news, game: gamecast, fantasy, settings, teamstats, redzone };
+  const pages = { home, scores, standings, playoffs, odds, power, leaders, players, player, pcompare, teams, team, compare, injuries, news, game: gamecast, fantasy, settings, teamstats, redzone, multi };
   document.querySelectorAll('#nav a').forEach(x => x.toggleAttribute('aria-current', x.classList.contains('on')));
   (pages[r] || home)(a, b, c).catch(e => view.innerHTML = fail(e));
 }
@@ -487,10 +487,141 @@ async function game(id, tab = 'box') {
    GAMECAST · live game experience (scorebug, field, play feed, win probability,
    game flow, live tiles, pregame / postgame modes, theater layout)
    ===================================================================== */
-const GC = { id: null, lastScore: null, seenPlays: new Set(), lastTiles: {}, lastWP: null, tab: 'box', first: true };
+const GC = { id: null, lastScore: null, seenPlays: new Set(), lastTiles: {}, lastWP: null, tab: 'box', first: true, S: null, openAth: null, nameRe: null };
 const bigPlay = p => p.scoringPlay || /interception|fumble|safety|blocked|touchdown/i.test(p.type?.text || '') || (num(p.statYardage) >= 20 && !/kickoff|punt/i.test(p.type?.text || '')) || (p.start?.down === 4 && num(p.statYardage) >= num(p.start?.distance) && !/punt|field goal/i.test(p.type?.text || ''));
 const playKind = p => p.scoringPlay ? 'score' : /interception|fumble/i.test(p.type?.text || '') && !/no fumble/i.test(p.text || '') ? 'turnover' : bigPlay(p) ? 'big' : '';
 const fmtClock = (st, c) => st.state === 'in' ? `${c.status?.period ? (c.status.period > 4 ? 'OT' : 'Q' + c.status.period) : ''} ${c.status?.displayClock || ''}`.trim() : st.shortDetail;
+
+
+/* ---------- v10: live clock that ticks between polls ---------- */
+const CLK = {}; let clkTimer = null;
+const STOP_RE = /timeout|incomplet|penalty|touchdown|field goal|kickoff|punt|two.?minute|end of|safety|extra point|interception|fumble|\bob\b|out of bounds|spike|sack/i;
+function syncClock(id, S) {
+  const st = S.c?.status; if (!S.live || !st || st.clock == null) { delete CLK[id]; return; }
+  const sec = Math.round(num(st.clock)), period = st.period || 0, prev = CLK[id];
+  const stopped = STOP_RE.test((S.sit.lastPlay?.type?.text || '') + ' ' + (S.sit.lastPlay?.text || ''));
+  const running = !!prev && prev.period === period && sec < prev.sec && sec > 0 && !stopped;
+  CLK[id] = { sec, period, at: Date.now(), running };
+  if (!clkTimer) clkTimer = setInterval(tickClocks, 1000); tickClocks();
+}
+const clockText = (period, sec) => `${period > 4 ? 'OT' : 'Q' + period} ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+function tickClocks() {
+  let any = false;
+  Object.entries(CLK).forEach(([id, k]) => { const els = document.querySelectorAll(`[data-clock="${id}"]`); if (!els.length) { delete CLK[id]; return; } any = true; const left = k.running ? Math.max(0, k.sec - Math.floor((Date.now() - k.at) / 1000)) : k.sec; const t = clockText(k.period, left); els.forEach(el => { if (el.textContent !== t) el.textContent = t; el.classList.toggle('ticking', k.running && left > 0); }); });
+  if (!any) { clearInterval(clkTimer); clkTimer = null; }
+}
+function stopClocks() { Object.keys(CLK).forEach(k => delete CLK[k]); clearInterval(clkTimer); clkTimer = null; }
+
+/* ---------- v10: scoring summary strip ---------- */
+const scoreKind = p => { const t = (p.type?.text || '').toLowerCase(); return /safety/.test(t) ? 'SAF' : /field goal/.test(t) ? 'FG' : /two.?point|2.?pt/.test(t) ? '2PT' : /touchdown|rushing|passing|return|fumble|interception/.test(t) ? 'TD' : p.scoringType?.abbreviation || 'TD'; };
+function scoreStripHTML(S) {
+  const sc = S.plays.filter(p => p.scoringPlay); if (!sc.length) return '';
+  return sc.map(p => { const t = p.drive?.team || (p.team?.id === S.h.team.id ? S.h.team : S.a.team); const k = scoreKind(p); return `<button class="ss k-${k.toLowerCase()}" data-pid="${esc(p.id)}" style="--tc:${colorOf(t)}" title="${esc(p.text)}"><img src="${esc(logo(t))}" alt=""><span class="ss-k">${k}</span><span class="ss-sc num">${esc(p.awayScore)}–${esc(p.homeScore)}</span><small>Q${esc(p.period?.number)} ${esc(p.clock?.displayValue || '')}</small></button>`; }).join('');
+}
+function jumpToPlay(pid) { const el = document.querySelector(`.pl[data-pid="${pid}"]`); if (!el) { toast('That play is further down the feed'); return; } el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.remove('hl'); void el.offsetWidth; el.classList.add('hl'); }
+
+/* ---------- v10: drive chart ---------- */
+const clamp100 = v => Math.max(0, Math.min(100, v));
+function drivePos(d) {
+  const own = d.team?.abbreviation; const parse = txt => { const t = String(txt || '').trim(); if (t === '50') return 50; const m = t.match(/^([A-Z&]+)\s+(\d+)/); return m ? (m[1] === own ? num(m[2]) : 100 - num(m[2])) : null; };
+  let s = parse(d.start?.text); if (s == null && d.start?.yardLine != null) s = num(d.start.yardLine); if (s == null) return {};
+  let e = parse(d.end?.text); if (e == null) e = s + num(d.yards); const r = (d.result || '').toUpperCase(); if (/^TD|TOUCHDOWN/.test(r) && !/INT|FUMBLE/.test(r)) e = 100;
+  return { s: clamp100(s), e: clamp100(e) };
+}
+function driveChartHTML(S) {
+  if (!S.drives.length) return '<div class="empty">No drives yet.</div>';
+  const rows = [...S.drives].reverse().map(d => { const isHome = d.team?.id === S.h.team.id; const { s, e } = drivePos(d); if (s == null) return '';
+    const x1 = isHome ? 100 - s : s, x2 = isHome ? 100 - e : e; const r = (d.result || d.displayResult || '').toUpperCase();
+    const k = /TD|TOUCHDOWN/.test(r) ? 'td' : /FG|FIELD GOAL/.test(r) ? 'fg' : /INT|FUMBLE|DOWNS|SAFETY/.test(r) ? 'to' : /PUNT/.test(r) ? 'punt' : (!d.result && S.live) ? 'cur' : 'other';
+    return `<div class="dc-row ${k}" style="--tc:${colorOf(d.team)}"><div class="dc-meta"><img src="${esc(logo(d.team))}" alt=""><div><b>${esc(d.team?.abbreviation || '')}</b><small>Q${esc(d.start?.period?.number || '')} ${esc(d.start?.clock?.displayValue || '')}</small></div></div>
+      <div class="dc-track"><i class="dc-bar" style="left:${Math.min(x1, x2)}%;width:${Math.max(1, Math.abs(x2 - x1))}%"></i><span class="dc-start" style="left:${x1}%"></span><span class="dc-end ${isHome ? 'l' : 'r'}" style="left:${x2}%"></span></div>
+      <div class="dc-res"><b>${esc(k === 'cur' ? 'In progress' : (d.displayResult || d.result || '—'))}</b><small>${esc(d.offensivePlays ?? 0)} plays · ${esc(d.yards ?? 0)} yds · ${esc(d.timeElapsed?.displayValue || '')}</small></div></div>`; }).join('');
+  const axis = [10,20,30,40,50,60,70,80,90].map(n => `<span style="left:${n}%">${n > 50 ? 100 - n : n}</span>`).join('');
+  return `<div class="dchart"><div class="dc-row head"><div class="dc-meta muted">Drive</div><div class="dc-track axis"><em class="ez" style="--tc:${colorOf(S.a.team)}">${esc(S.a.team.abbreviation)}</em>${axis}<em class="ez r" style="--tc:${colorOf(S.h.team)}">${esc(S.h.team.abbreviation)}</em></div><div class="dc-res muted">Result</div></div>${rows}</div>
+    <div class="dc-legend"><span class="td">Touchdown</span><span class="fg">Field goal</span><span class="punt">Punt</span><span class="to">Turnover</span><span class="other">Other</span></div>`;
+}
+
+/* ---------- v10: live player stat cards ---------- */
+function athIndex(S) {
+  const m = {}; (S.s.boxscore?.players || []).forEach(side => side.statistics.forEach(c => c.athletes.forEach(p => { const r = (m[p.athlete.id] ||= { a: p.athlete, team: side.team, lines: [] }); if (p.stats.some(v => v && !/^(0|0\/0|--|-|0\.0)$/.test(String(v)))) r.lines.push({ cat: c.text || c.name, labels: c.labels, stats: p.stats }); }))); return m;
+}
+const SUFFIX = /^(jr\.?|sr\.?|ii|iii|iv|v)$/i;
+function buildNameRe(ath) {
+  const keys = []; Object.values(ath).forEach(r => { const n = r.a.displayName || ''; if (!n) return; keys.push([n, r.a.id]); const parts = n.split(/\s+/).filter(p => !SUFFIX.test(p)); if (parts.length >= 2) keys.push([parts[0][0] + '.' + parts.slice(1).join(' '), r.a.id]); });
+  if (!keys.length) return null; keys.sort((x, y) => y[0].length - x[0].length); const map = Object.fromEntries(keys);
+  return { re: new RegExp('(^|[^A-Za-z.])(' + keys.map(k => k[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')(?![A-Za-z])', 'g'), map };
+}
+const linkNames = (text, S) => { const t = esc(text); const nr = S.nameRe; return nr ? t.replace(nr.re, (m, pre, name) => `${pre}<span class="pn" data-ath="${esc(nr.map[name])}" data-gid="${esc(S.id)}">${name}</span>`) : t; };
+function athCardHTML(S, id) {
+  const r = S.ath?.[id]; if (!r) return '';
+  const f = fantasyFromBox(S.s)[id]; const fp = f ? ['std','half','ppr'].map(k => `<span><small>${k.toUpperCase()}</small><b>${fpts(f, FSCORE[k]).toFixed(1)}</b></span>`).join('') : '';
+  const lines = r.lines.map(l => `<div class="ac-line"><small>${esc(l.cat)}</small><div>${l.labels.map((lb, i) => `<span><b>${esc(l.stats[i])}</b> ${esc(lb)}</span>`).join('')}</div></div>`).join('');
+  return `<div class="ac-head" style="--tc:${colorOf(r.team)}"><img src="${esc(hsOf(r.a))}" alt="" onerror="this.style.visibility='hidden'"><div><b>${esc(r.a.displayName)}</b><small>${esc(r.a.position?.abbreviation || '')} · ${esc(r.team.abbreviation)}${S.live ? ' · <em class="livetag" style="display:inline">live</em>' : ''}</small></div><button class="ac-x" data-close aria-label="Close">×</button></div>
+    ${lines || '<div class="ac-line muted">No stats yet.</div>'}${fp ? `<div class="ac-fp">${fp}</div>` : ''}
+    <div class="ac-foot"><a class="chip" href="#player/${esc(id)}">Full profile →</a>${LEAGUE.key === 'nfl' ? `<a class="chip" href="#pcompare/${esc(id)}-${SEASON}">Compare</a>` : ''}</div>`;
+}
+function openAthCard(id, anchor, S) {
+  if (!S?.ath?.[id]) { location.hash = `player/${id}`; return; }
+  let card = document.getElementById('athcard'); if (!card) { card = document.createElement('div'); card.id = 'athcard'; card.className = 'athcard'; document.body.appendChild(card); }
+  GC.openAth = { id, gid: S.id }; card.innerHTML = athCardHTML(S, id); card.classList.add('show');
+  const r = anchor?.getBoundingClientRect?.(); const w = 340; if (r && window.innerWidth > 640) { card.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left)) + 'px'; const below = r.bottom + 8; card.style.top = (below + 320 > window.innerHeight ? Math.max(8, r.top - 8 - card.offsetHeight) : below) + 'px'; } else { card.style.left = ''; card.style.top = ''; }
+}
+function closeAthCard() { GC.openAth = null; document.getElementById('athcard')?.classList.remove('show'); }
+function refreshAthCard(S) { if (GC.openAth && GC.openAth.gid === S.id) { const c = document.getElementById('athcard'); if (c?.classList.contains('show')) c.innerHTML = athCardHTML(S, GC.openAth.id); } }
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-ath]'); if (t) { const S = t.dataset.gid && MULTI.S[t.dataset.gid] ? MULTI.S[t.dataset.gid] : GC.S; if (S?.ath?.[t.dataset.ath]) { e.preventDefault(); openAthCard(t.dataset.ath, t, S); } return; }
+  const ss = e.target.closest('.ss[data-pid]'); if (ss) { jumpToPlay(ss.dataset.pid); return; }
+  if (e.target.closest('[data-close]') || !e.target.closest('#athcard')) closeAthCard();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAthCard(); });
+
+/* ---------- v10: score celebrations ---------- */
+let bannerT;
+function scoreBanner(S, who, delta, newScoringPlay) {
+  const t = newScoringPlay?.type?.text || ''; const kind = /safety/i.test(t) ? 'SAFETY' : /field goal/i.test(t) ? 'FIELD GOAL' : /two.?point/i.test(t) ? 'TWO-POINT CONVERSION' : /touchdown|td/i.test(t) ? 'TOUCHDOWN' : delta >= 6 ? 'TOUCHDOWN' : delta === 3 ? 'FIELD GOAL' : delta === 2 ? 'SAFETY' : delta === 1 ? 'EXTRA POINT' : 'SCORE';
+  let b = document.getElementById('sbanner'); if (!b) { b = document.createElement('div'); b.id = 'sbanner'; document.body.appendChild(b); }
+  b.style.setProperty('--tc', colorOf(who.team)); b.innerHTML = `<img src="${esc(logo(who.team))}" alt=""><div><b>${kind}</b><span>${esc(who.team.displayName)}</span><small>${esc(S.a.team.abbreviation)} ${S.score.a} – ${esc(S.h.team.abbreviation)} ${S.score.h}${newScoringPlay ? ' · ' + esc(newScoringPlay.text).slice(0, 90) : ''}</small></div>`;
+  b.classList.remove('show'); void b.offsetWidth; b.classList.add('show'); clearTimeout(bannerT); bannerT = setTimeout(() => b.classList.remove('show'), 3200);
+}
+function celebrate(root, side, who) {
+  const sc = root?.querySelector(`.sb-score[data-side="${side}"]`); if (sc) { sc.classList.remove('roll'); void sc.offsetWidth; sc.classList.add('roll'); }
+  const bug = root?.querySelector('.scorebug'); if (bug) { bug.style.setProperty('--hit', colorOf(who.team)); bug.classList.remove('hit'); void bug.offsetWidth; bug.classList.add('hit'); }
+}
+
+/* ---------- v10: split-screen multi-game view ---------- */
+const MULTI = { S: {}, last: {}, seen: {} };
+async function multi(idsStr, mode) {
+  const theater = mode === 'theater'; document.body.classList.toggle('theater', theater);
+  const sb = await getJSON(SB_URL(), 15000); watchScores(sb.events); watchLive(sb.events);
+  const evs = [...sb.events].sort((x, y) => ({ in: 0, pre: 1, post: 2 }[x.status.type.state] ?? 2) - ({ in: 0, pre: 1, post: 2 }[y.status.type.state] ?? 2) || new Date(x.date) - new Date(y.date));
+  let ids = String(idsStr || '').split(',').filter(Boolean).filter(id => sb.events.some(e => e.id === id)).slice(0, 4);
+  if (!ids.length) ids = evs.filter(e => e.status.type.state === 'in').slice(0, 2).map(e => e.id);
+  const hashFor = (list, th = theater) => `#multi/${list.join(',')}${th ? '/theater' : ''}`;
+  const chip = ev => { const c = ev.competitions[0], [a, h] = byHome(c), on = ids.includes(ev.id), st = ev.status.type; return `<label class="mchip ${on ? 'on' : ''} ${st.state}"><input type="checkbox" value="${esc(ev.id)}" ${on ? 'checked' : ''} ${!on && ids.length >= 4 ? 'disabled' : ''}><span>${esc(a.team.abbreviation)} @ ${esc(h.team.abbreviation)}</span><small>${st.state === 'in' ? '<i class="dot"></i>' + esc(fmtClock(st, c)) : st.state === 'pre' ? esc(fmtShort(ev.date)) : esc(st.shortDetail)}</small></label>`; };
+  view.innerHTML = `<div class="bar"><div><h1>Split screen</h1><h2>Watch up to four games at once · ${ids.length ? ids.length + ' selected' : 'pick games below'}</h2></div><div class="row"><a class="chip" href="#redzone">RedZone</a><a class="chip ${theater ? 'on' : ''}" href="${hashFor(ids, !theater)}">${theater ? 'Exit theater' : 'Theater mode'}</a></div></div>
+    <div class="mpick" id="mpick">${evs.map(chip).join('')}</div>
+    <div class="mgrid n${ids.length}" id="mgrid">${ids.map(id => `<div class="mpane panel" id="mp-${esc(id)}"><div class="skel"></div></div>`).join('') || '<div class="panel"><div class="empty">No live games right now — pick any games above to watch them side by side.</div></div>'}</div>`;
+  view.querySelectorAll('#mpick input').forEach(i => i.onchange = () => { const next = [...view.querySelectorAll('#mpick input:checked')].map(x => x.value).slice(0, 4); history.replaceState(null, '', hashFor(next)); multi(next.join(','), mode); });
+  if (!ids.length) return;
+  await multiTick(ids);
+  if (ids.some(id => MULTI.S[id]?.live || MULTI.S[id]?.pre)) poll(() => multiTick(ids), true);
+}
+async function multiTick(ids) {
+  await Promise.all(ids.map(async id => { const pane = document.getElementById(`mp-${id}`); if (!pane) return;
+    let S; try { S = await gcState(id); } catch (e) { pane.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    S.id = String(id); S.ath = athIndex(S); S.nameRe = buildNameRe(S.ath); MULTI.S[id] = S;
+    const seen = (MULTI.seen[id] ||= new Set()); const fresh = !pane.querySelector('.scorebug'); const newIds = new Set(S.plays.filter(p => !seen.has(p.id)).map(p => p.id)); S.plays.forEach(p => seen.add(p.id));
+    const prev = MULTI.last[id]; const scoredSide = prev && (prev.a !== S.score.a || prev.h !== S.score.h) ? (S.score.h !== prev.h ? 'h' : 'a') : null; MULTI.last[id] = { ...S.score };
+    const recent = [...S.plays].reverse().slice(0, 6);
+    const parts = { sb: `<a class="scorebug mini" href="#game/${esc(id)}">${scorebugHTML(S)}</a>`, strip: `<div class="scorestrip">${scoreStripHTML(S)}</div>`, field: S.live ? fieldHTML(S) : '', wp: S.wp.length > 1 ? (() => { const hp = Math.round(S.wp[S.wp.length - 1].homeWinPercentage * 100); return `<div class="wpbar-wrap"><b>${esc(S.a.team.abbreviation)} ${100 - hp}%</b><div class="wpbar"><i style="width:${100 - hp}%;background:${colorOf(S.a.team)}"></i><i style="width:${hp}%;background:${colorOf(S.h.team)}"></i></div><b>${esc(S.h.team.abbreviation)} ${hp}%</b></div>`; })() : '', feed: recent.length ? recent.map(p => playCard(p, S, !fresh && newIds.has(p.id))).join('') : `<div class="empty">${S.pre ? 'Kickoff ' + esc(fmtShort(S.ev?.date)) : 'No plays yet.'}</div>` };
+    if (fresh) pane.innerHTML = `<div data-part="sb">${parts.sb}</div><div data-part="strip">${parts.strip}</div><div data-part="field">${parts.field}</div><div data-part="wp">${parts.wp}</div><div data-part="feed" class="feed mini">${parts.feed}</div><div class="mp-foot"><a class="chip" href="#game/${esc(id)}">Open Gamecast →</a><span class="muted">${S.live ? 'updates live' : S.post ? 'Final' : ''}</span></div>`;
+    else Object.entries(parts).forEach(([k, html]) => { const el = pane.querySelector(`[data-part="${k}"]`); if (el && (k !== 'feed' || newIds.size) && el.innerHTML !== html) el.innerHTML = html; });
+    pane.classList.toggle('live', S.live);
+    if (scoredSide) { const who = scoredSide === 'h' ? S.h : S.a; celebrate(pane, scoredSide, who); const sp = S.plays.filter(p => p.scoringPlay && newIds.has(p.id)).pop(); scoreBanner(S, who, Math.abs(scoredSide === 'h' ? S.score.h - prev.h : S.score.a - prev.a), sp); liveAlert(`${who.team.abbreviation} scores`, `${S.a.team.abbreviation} ${S.score.a} – ${S.h.team.abbreviation} ${S.score.h}`, 'score'); }
+    newIds.forEach(pid => { if (fresh) return; const p = S.plays.find(x => x.id === pid); if (p && playKind(p) === 'turnover') liveAlert('Turnover', p.text, 'turnover'); });
+    syncClock(id, S); refreshAthCard(S);
+  }));
+}
 
 // field x% for the team in possession: away drives left→right, home drives right→left
 const fieldX = (yardLine, possIsHome) => { const y = Math.max(0, Math.min(100, num(yardLine))); return possIsHome ? 100 - y : y; };
@@ -505,14 +636,14 @@ async function gcState(id) {
   const sit = c?.situation || {};
   const drives = [...(s.drives?.previous || []), ...(s.drives?.current ? [s.drives.current] : [])];
   const plays = drives.flatMap(d => (d.plays || []).map(p => ({ ...p, drive: d })));
-  return { s, ev, c, st, a, h, score, sit, drives, plays, wp: s.winprobability || [], live: st.state === 'in', pre: st.state === 'pre', post: st.completed };
+  return { id: String(id), s, ev, c, st, a, h, score, sit, drives, plays, wp: s.winprobability || [], live: st.state === 'in', pre: st.state === 'pre', post: st.completed };
 }
 
 function scorebugHTML(S) {
   const { a, h, score, st, sit, c, live } = S;
   const poss = sit.possession; const to = (n) => `<span class="tos">${[0,1,2].map(i => `<i class="${i < num(n) ? 'on' : ''}"></i>`).join('')}</span>`;
   const side = (t, sc, isHome) => `<div class="sb-team ${isHome ? 'home' : 'away'} ${poss === t.team.id ? 'poss' : ''}" style="--tc:${colorOf(t.team)}"><img src="${esc(logo(t.team))}" alt=""><div class="sb-name"><b>${rankBadge(isHome ? (S.c?.competitors?.find(x => x.homeAway === 'home')) : (S.c?.competitors?.find(x => x.homeAway === 'away')))}${esc(t.team.abbreviation)}</b><small>${esc(t.record?.[0]?.displayValue || '')}</small>${live ? to(isHome ? sit.homeTimeouts : sit.awayTimeouts) : ''}</div><div class="sb-score" data-side="${isHome ? 'h' : 'a'}">${S.pre ? '' : sc}</div></div>`;
-  const mid = live ? `<div class="sb-mid"><b class="sb-clock">${esc(fmtClock(st, c))}</b><small>${esc(sit.downDistanceText || sit.shortDownDistanceText || '')}</small>${sit.isRedZone ? '<em class="rz">Red zone</em>' : ''}</div>` : `<div class="sb-mid"><b class="sb-clock">${S.pre ? esc(fmtShort(S.ev?.date || S.s.header?.competitions?.[0]?.date)) : 'Final'}</b><small>${S.pre ? esc(S.c?.odds?.[0]?.details || '') : esc(st.detail || '')}</small></div>`;
+  const mid = live ? `<div class="sb-mid"><b class="sb-clock" data-clock="${esc(S.id)}">${esc(fmtClock(st, c))}</b><small>${esc(sit.downDistanceText || sit.shortDownDistanceText || '')}</small>${sit.isRedZone ? '<em class="rz">Red zone</em>' : ''}</div>` : `<div class="sb-mid"><b class="sb-clock">${S.pre ? esc(fmtShort(S.ev?.date || S.s.header?.competitions?.[0]?.date)) : 'Final'}</b><small>${S.pre ? esc(S.c?.odds?.[0]?.details || '') : esc(st.detail || '')}</small></div>`;
   return `${side(a, score.a, false)}${mid}${side(h, score.h, true)}`;
 }
 
@@ -537,7 +668,7 @@ function fieldHTML(S) {
 function playCard(p, S, isNew) {
   const kind = playKind(p); const team = p.drive?.team; const yds = num(p.statYardage);
   return `<div class="pl ${kind} ${isNew ? 'new' : ''}" data-pid="${esc(p.id)}" style="--tc:${colorOf(team)}"><div class="pl-when"><span>Q${esc(p.period?.number)}</span><small>${esc(p.clock?.displayValue || '')}</small></div>
-    <div class="pl-body">${kind ? `<span class="pl-tag ${kind}">${kind === 'score' ? (p.type?.text || 'Score') : kind === 'turnover' ? 'Turnover' : 'Big play'}</span>` : ''}<span class="pl-dd">${esc(p.start?.downDistanceText || p.type?.text || '')}</span><div class="pl-text">${esc(p.text)}</div></div>
+    <div class="pl-body">${kind ? `<span class="pl-tag ${kind}">${kind === 'score' ? (p.type?.text || 'Score') : kind === 'turnover' ? 'Turnover' : 'Big play'}</span>` : ''}<span class="pl-dd">${esc(p.start?.downDistanceText || p.type?.text || '')}</span><div class="pl-text">${linkNames(p.text, S)}</div></div>
     <div class="pl-right"><span class="pl-yds ${yds > 0 ? 'pos' : yds < 0 ? 'neg' : ''}">${/kickoff|punt|timeout|end of|two-minute/i.test(p.type?.text || '') ? '' : (yds || yds === 0 ? sgn(yds) : '')}</span><span class="pl-score num">${esc(p.awayScore)}–${esc(p.homeScore)}</span></div></div>`;
 }
 function feedHTML(S, newIds = new Set()) {
@@ -566,7 +697,7 @@ function tilesHTML(S) {
 }
 function topPerfHTML(S) {
   const sides = S.s.boxscore?.players || []; if (!sides.length) return '';
-  const pick = (side, cat, lbl) => { const c = side.statistics.find(x => x.name === cat); if (!c?.athletes?.length) return ''; const i = c.labels.indexOf(lbl); const best = [...c.athletes].sort((x, y) => num(y.stats[i]) - num(x.stats[i]))[0]; if (!best || !num(best.stats[i])) return ''; return `<a class="perf" href="#player/${esc(best.athlete.id)}"><img src="${esc(hsOf(best.athlete))}" alt=""><div><b>${esc(best.athlete.displayName)}</b><small>${esc(cat)} · ${esc(c.labels.map((l, j) => l + ' ' + best.stats[j]).slice(0, 4).join(' · '))}</small></div></a>`; };
+  const pick = (side, cat, lbl) => { const c = side.statistics.find(x => x.name === cat); if (!c?.athletes?.length) return ''; const i = c.labels.indexOf(lbl); const best = [...c.athletes].sort((x, y) => num(y.stats[i]) - num(x.stats[i]))[0]; if (!best || !num(best.stats[i])) return ''; return `<a class="perf" href="#player/${esc(best.athlete.id)}" data-ath="${esc(best.athlete.id)}" data-gid="${esc(S.id)}"><img src="${esc(hsOf(best.athlete))}" alt=""><div><b>${esc(best.athlete.displayName)}</b><small>${esc(cat)} · ${esc(c.labels.map((l, j) => l + ' ' + best.stats[j]).slice(0, 4).join(' · '))}</small></div></a>`; };
   return sides.map(side => `<div class="perf-side" style="--tc:${colorOf(side.team)}"><div class="perf-h"><img src="${esc(logo(side.team))}" alt="">${esc(side.team.abbreviation)}</div>${pick(side, 'passing', 'YDS')}${pick(side, 'rushing', 'YDS')}${pick(side, 'receiving', 'YDS')}</div>`).join('');
 }
 function wpPanel(S) {
@@ -606,19 +737,21 @@ async function gamecast(id, tab = 'box') {
   document.body.classList.toggle('theater', theater);
   const fresh = GC.id !== String(id); if (fresh) { GC.id = String(id); GC.lastScore = null; GC.seenPlays = new Set(); GC.lastTiles = {}; GC.first = true; }
   GC.tab = theater ? GC.tab : tab;
-  const S = await gcState(id);
+  const S = await gcState(id); S.ath = athIndex(S); S.nameRe = buildNameRe(S.ath); GC.S = S;
   const info = S.s.gameInfo || {}; const bc = S.s.header?.competitions?.[0]?.broadcasts?.[0]?.media?.shortName || S.c?.broadcasts?.[0]?.names?.join('/') || '';
   const newIds = new Set(S.plays.filter(p => !GC.seenPlays.has(p.id)).map(p => p.id)); const firstRender = GC.first; S.plays.forEach(p => GC.seenPlays.add(p.id));
   // alerts on score change / turnovers for my teams and for this open game
-  if (GC.lastScore && (GC.lastScore.a !== S.score.a || GC.lastScore.h !== S.score.h)) { const who = S.score.h !== GC.lastScore.h ? S.h : S.a; flashScore(who === S.h ? 'h' : 'a'); liveAlert(`${who.team.abbreviation} scores`, `${S.a.team.abbreviation} ${S.score.a} – ${S.h.team.abbreviation} ${S.score.h} · ${fmtClock(S.st, S.c || {})}`, 'score'); }
+  let scored = null;
+  if (GC.lastScore && (GC.lastScore.a !== S.score.a || GC.lastScore.h !== S.score.h)) { const who = S.score.h !== GC.lastScore.h ? S.h : S.a; const side = who === S.h ? 'h' : 'a'; scored = { who, side, delta: Math.abs(side === 'h' ? S.score.h - GC.lastScore.h : S.score.a - GC.lastScore.a) }; liveAlert(`${who.team.abbreviation} scores`, `${S.a.team.abbreviation} ${S.score.a} – ${S.h.team.abbreviation} ${S.score.h} · ${fmtClock(S.st, S.c || {})}`, 'score'); }
   GC.lastScore = { ...S.score };
   const headerBits = [S.st.detail, info.venue?.fullName, info.weather?.temperature != null ? info.weather.temperature + '°F' : '', bc].filter(Boolean).map(esc).join(' · ');
   const existing = !fresh && document.getElementById('gc') && !firstRender;
   if (!existing) {
-    view.innerHTML = `<div class="row" style="justify-content:space-between"><a class="back" href="#scores/${S.s.header?.season?.type === 3 ? 'p' : ''}${esc(S.s.header?.week || '')}">← Scoreboard</a><div class="row"><a class="chip" href="#redzone">RedZone view</a><a class="chip ${theater ? 'on' : ''}" href="#game/${esc(id)}/${theater ? 'box' : 'theater'}">${theater ? 'Exit theater' : 'Theater mode'}</a></div></div>
+    view.innerHTML = `<div class="row" style="justify-content:space-between"><a class="back" href="#scores/${S.s.header?.season?.type === 3 ? 'p' : ''}${esc(S.s.header?.week || '')}">← Scoreboard</a><div class="row"><a class="chip" href="#redzone">RedZone</a><a class="chip" href="#multi/${esc(id)}">Split screen</a><a class="chip ${theater ? 'on' : ''}" href="#game/${esc(id)}/${theater ? 'box' : 'theater'}">${theater ? 'Exit theater' : 'Theater mode'}</a></div></div>
       <div id="gc" class="gc ${S.live ? 'live' : ''}">
         <div class="scorebug" id="scorebug">${scorebugHTML(S)}</div>
         <div class="muted gc-sub" id="gcsub">${headerBits}</div>
+        <div class="scorestrip" id="scorestrip">${scoreStripHTML(S)}</div>
         ${S.pre ? `<div id="pregame" class="stack"></div>` : ''}
         ${S.live || S.post ? `<div class="panel" id="fieldpanel">${S.live ? `<h3><span><span class="dot"></span>Live</span><span class="pill" id="gcclock">${esc(fmtClock(S.st, S.c || {}))}</span></h3>` : ''}<div id="field">${S.live ? fieldHTML(S) : ''}</div></div>` : ''}
         ${S.post ? `<div id="postgame" class="stack">${postgameHTML(S)}</div>` : ''}
@@ -633,7 +766,7 @@ async function gamecast(id, tab = 'box') {
             ${S.live || S.post ? `<div class="panel"><h3>Top performers</h3><div class="perfs" id="perfs">${topPerfHTML(S)}</div></div>` : ''}
           </div>
         </div>
-        <div class="tabs" id="gctabs">${[['box','Box score'],['drives','Drive summary'],['stats','Team stats']].map(([k, l]) => `<button class="${k === GC.tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div>
+        <div class="tabs" id="gctabs">${[['box','Box score'],['chart','Drive chart'],['drives','Drive summary'],['stats','Team stats']].map(([k, l]) => `<button class="${k === GC.tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div>
         <div id="gtab"></div>
       </div>`;
     if (S.pre) pregameHTML(S).then(html => { const el = document.getElementById('pregame'); if (el) { el.innerHTML = html; tickCountdown(); } }).catch(() => {});
@@ -643,6 +776,9 @@ async function gamecast(id, tab = 'box') {
     // incremental update: patch what changed instead of rebuilding
     const sbEl = document.getElementById('scorebug'); if (sbEl) sbEl.innerHTML = scorebugHTML(S);
     const sub = document.getElementById('gcsub'); if (sub) sub.innerHTML = headerBits;
+    const strip = document.getElementById('scorestrip'); if (strip) { const h = scoreStripHTML(S); if (strip.innerHTML !== h) strip.innerHTML = h; }
+    if (scored) { celebrate(document.getElementById('gc'), scored.side, scored.who); scoreBanner(S, scored.who, scored.delta, S.plays.filter(p => p.scoringPlay && newIds.has(p.id)).pop()); }
+    refreshAthCard(S);
     const f = document.getElementById('field'); if (f && S.live) f.innerHTML = fieldHTML(S);
     const ck = document.getElementById('gcclock'); if (ck) ck.textContent = fmtClock(S.st, S.c || {});
     const feed = document.getElementById('feed'); if (feed && newIds.size) { feed.innerHTML = feedHTML(S, newIds); }
@@ -653,7 +789,7 @@ async function gamecast(id, tab = 'box') {
     if (S.post && !document.getElementById('postgame')) { route(); return; }
     newIds.forEach(pid => { const p = S.plays.find(x => x.id === pid); const k = p && playKind(p); if (k === 'turnover') liveAlert('Turnover', p.text, 'turnover'); });
   }
-  renderGameTab(S);
+  renderGameTab(S); syncClock(S.id, S);
   if (S.live) poll(() => gamecast(id, tab), true); else if (S.pre) { const ms = new Date(S.ev?.date || 0) - Date.now(); if (ms > 0 && ms < 3 * 3600000) poll(() => gamecast(id, tab), false); }
 }
 function renderGameTab(S) {
@@ -664,10 +800,10 @@ function renderGameTab(S) {
   const cmp = (tsA && tsH) ? `<div class="panel"><h3>Team stats</h3><div class="cmp">${want.map(([n, l]) => { const va = stat(tsA, n), vh = stat(tsH, n); if (va === '' && vh === '') return ''; const toS = v => n === 'possessionTime' ? num(v) * 60 + num(v.split(':')[1] || 0) : num(v); const na = toS(va), nh = toS(vh), lower = n === 'turnovers' || n === 'totalPenaltiesYards'; const aw = lower ? na < nh : na > nh, hw = lower ? nh < na : nh > na, mx = Math.max(na, nh, 1);
     return `<div class="r"><span class="l">${esc(va)}</span><div><div class="lbl">${l}</div><div class="bars"><span class="a"><i class="${aw ? 'w' : ''}" style="width:${na / mx * 100}%"></i></span><span class="b"><i class="${hw ? 'w' : ''}" style="width:${nh / mx * 100}%"></i></span></div></div><span class="rr">${esc(vh)}</span></div>`; }).join('')}</div></div>` : '<div class="panel"><div class="empty">Team stats appear once the game kicks off.</div></div>';
   const cats = ['passing','rushing','receiving','defensive','kicking'];
-  const box = (s.boxscore?.players || []).map(side => `<div class="panel"><h3>${esc(side.team.displayName)}</h3>${side.statistics.filter(c => cats.includes(c.name)).map(c => `<div class="tw"><table><thead><tr><th>${esc(c.text || c.name)}</th>${c.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${c.athletes.slice(0, c.name === 'defensive' ? 8 : 20).map(p => `<tr><td><a class="lnk" href="#player/${esc(p.athlete.id)}">${esc(p.athlete.displayName)}</a></td>${p.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}</div>`).join('');
+  const box = (s.boxscore?.players || []).map(side => `<div class="panel"><h3>${esc(side.team.displayName)}</h3>${side.statistics.filter(c => cats.includes(c.name)).map(c => `<div class="tw"><table><thead><tr><th>${esc(c.text || c.name)}</th>${c.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${c.athletes.slice(0, c.name === 'defensive' ? 8 : 20).map(p => `<tr><td><a class="lnk" href="#player/${esc(p.athlete.id)}" data-ath="${esc(p.athlete.id)}" data-gid="${esc(S.id)}">${esc(p.athlete.displayName)}</a></td>${p.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}</div>`).join('');
   const drv = S.drives.length ? (() => { const byTeam = {}; S.drives.forEach(d => { const k = d.team?.abbreviation || '?'; const o = (byTeam[k] ||= { n: 0, plays: 0, yds: 0, td: 0, fg: 0, to: 0, punt: 0, secs: 0, team: d.team }); o.n++; o.plays += num(d.offensivePlays); o.yds += num(d.yards); const r = (d.result || '').toUpperCase(); if (/TD/.test(r)) o.td++; else if (/FG/.test(r)) o.fg++; else if (/INT|FUMBLE|DOWNS/.test(r)) o.to++; else if (/PUNT/.test(r)) o.punt++; const [m, sct] = (d.timeElapsed?.displayValue || '0:00').split(':'); o.secs += num(m) * 60 + num(sct); });
     return `<div class="panel"><h3>Drive summary</h3><div class="tw"><table><thead><tr><th>Team</th><th class="num">Drives</th><th class="num">Plays/drive</th><th class="num">Yds/drive</th><th class="num">TD</th><th class="num">FG</th><th class="num">TO</th><th class="num">Punts</th><th class="num">Scoring %</th><th class="num">Avg time</th></tr></thead><tbody>${Object.values(byTeam).map(o => `<tr><td class="tm"><img src="${esc(logo(o.team))}" alt="">${esc(o.team?.abbreviation)}</td><td class="num">${o.n}</td><td class="num">${(o.plays / o.n).toFixed(1)}</td><td class="num">${(o.yds / o.n).toFixed(1)}</td><td class="num">${o.td}</td><td class="num">${o.fg}</td><td class="num ${o.to ? 'neg' : ''}">${o.to}</td><td class="num">${o.punt}</td><td class="num">${Math.round((o.td + o.fg) / o.n * 100)}%</td><td class="num">${Math.floor(o.secs / o.n / 60)}:${String(Math.round(o.secs / o.n % 60)).padStart(2, '0')}</td></tr>`).join('')}</tbody></table></div></div>`; })() : '<div class="panel"><div class="empty">No drives yet.</div></div>';
-  const content = { box: `<div class="two"><div class="stack">${box || '<div class="panel"><div class="empty">Box score appears once the game kicks off.</div></div>'}</div><div class="stack">${cmp}</div></div>`, drives: drv, stats: cmp };
+  const content = { box: `<div class="two"><div class="stack">${box || '<div class="panel"><div class="empty">Box score appears once the game kicks off.</div></div>'}</div><div class="stack">${cmp}</div></div>`, chart: `<div class="panel"><h3>Drive chart<span class="pill">${S.live ? 'newest first · updates live' : 'newest first'}</span></h3>${driveChartHTML(S)}</div>${S.drives.length ? drv : ''}`, drives: drv, stats: cmp };
   el.innerHTML = content[GC.tab] || content.box;
 }
 function flashScore(side) { const el = document.querySelector(`.sb-score[data-side="${side}"]`); if (!el) return; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
@@ -695,7 +831,7 @@ async function redzone() {
   const tile = ev => { const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c); const sit = c.situation || {}; const key = ev.id; const prev = rzLast[key]; const changed = prev && (prev.a !== a.score || prev.h !== h.score); rzLast[key] = { a: a.score, h: h.score };
     const row = t => `<div class="rz-team ${sit.possession === t.id ? 'poss' : ''} ${st.completed && !t.winner ? 'lost' : ''}" style="--tc:${colorOf(t.team)}"><img src="${esc(t.team.logo)}" alt=""><b>${esc(t.team.abbreviation)}</b><small>${esc(t.records?.[0]?.summary || '')}</small><span class="num sc ${changed && prev && prev[t.homeAway === 'home' ? 'h' : 'a'] !== t.score ? 'flash' : ''}">${st.state === 'pre' ? '' : esc(t.score)}</span></div>`;
     return `<a class="rz-tile ${st.state} ${sit.isRedZone ? 'inrz' : ''} ${favGame(ev) ? 'fav' : ''}" href="#game/${ev.id}"><div class="rz-top"><span class="${st.state === 'in' ? 'live' : ''}">${st.state === 'in' ? '<span class="dot"></span>' : ''}${esc(st.state === 'in' ? fmtClock(st, c) : st.state === 'pre' ? fmtShort(ev.date) : st.shortDetail)}</span>${sit.isRedZone ? '<em class="rz">RED ZONE</em>' : ''}</div>${row(a)}${row(h)}<div class="rz-sit">${st.state === 'in' ? esc(sit.downDistanceText || '') + (sit.possessionText ? ' · ' + esc(sit.possessionText) : '') : esc(c.broadcasts?.[0]?.names?.join('/') || '')}</div>${sit.lastPlay?.text && st.state === 'in' ? `<div class="rz-last">${esc(sit.lastPlay.text)}</div>` : ''}</a>`; };
-  view.innerHTML = `<div class="bar"><div><h1>RedZone</h1><h2>${live.length ? live.length + ' live · sorted by excitement' : 'No live games right now'} · Week ${esc(sb.week?.number || '')}</h2></div><span class="upd">${live.length ? 'Live · auto-refreshing' : ''}</span></div>
+  view.innerHTML = `<div class="bar"><div><h1>RedZone</h1><h2>${live.length ? live.length + ' live · sorted by excitement' : 'No live games right now'} · Week ${esc(sb.week?.number || '')}</h2></div><div class="row"><a class="chip" href="#multi/${esc(live.slice(0, 4).map(e => e.id).join(','))}">Split screen${live.length ? ' · top ' + Math.min(4, live.length) : ''}</a><span class="upd">${live.length ? 'Live · auto-refreshing' : ''}</span></div></div>
     ${live.length ? `<div class="rz-grid">${live.map(tile).join('')}</div>` : ''}
     ${up.length ? `<h3 class="cap" style="margin:var(--s5) 0 var(--s3);color:var(--muted)">Up next</h3><div class="rz-grid">${up.slice(0, 8).map(tile).join('')}</div>` : ''}
     ${done.length ? `<h3 class="cap" style="margin:var(--s5) 0 var(--s3);color:var(--muted)">Final</h3><div class="rz-grid">${done.map(tile).join('')}</div>` : ''}`;
@@ -1374,7 +1510,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '9.3';
+const APP_VERSION = '10.0';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });

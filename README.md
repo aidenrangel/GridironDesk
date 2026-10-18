@@ -22,6 +22,11 @@ No build step, no backend.
 Everything (install to home screen, offline shell, notifications) works once it's served over https.
 Opening `index.html` directly from disk also works in Safari/Chrome; only the install/offline features need https.
 
+## Live games
+- **Gamecast** (`#game/ID`): scorebug with a ticking clock, field view, scoring strip (click a score to jump to the play), play-by-play with clickable player names, win probability, game flow, live tiles, drive chart, box score.
+- **Split screen** (`#multi/ID,ID,...`): up to four games side by side; add `/theater` to hide the chrome. Reachable from any Gamecast or from RedZone.
+- **Player cards**: click any name in the play feed, top performers or box score for the player's live line and fantasy points.
+
 ## Notes
 - Favorite teams, theme, season, fantasy format and the roster cache live in your browser's localStorage.
 - Playoff odds, the power index and fantasy points are computed in the page; they are not ESPN's numbers.
