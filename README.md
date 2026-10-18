@@ -39,6 +39,9 @@ Opening `index.html` directly from disk also works in Safari/Chrome; only the in
 - **Offense/defense ratings**, weekly rating movement and rating history (Power index, team pages, Compare); **projected finish** distribution on team pages; **matchup previews** on pregame pages and model picks on the scoreboard.
 - **Weekly recap** (`#recap`), **Bowl projections** (`#bowls`, college), pinned mini-scorebug (📌 on any Gamecast), auto-switch to the hottest game (Settings / RedZone), haptics, key-moment markers on the win-probability chart, "if scores hold" seed changes on the live scoreboard, share cards (PNG), keyboard shortcuts (←/→ week, 1–9 open a game, R RedZone), stale scoreboard fallback, settings export/import.
 
+## Player stats (v13)
+- **Stats** replaces Leaders. NFL: full season tables (passing, rushing, receiving, defense, kicking, punting, returns) summed from every game's box score — every player, sortable columns, position/team/rookie filters, qualified toggle, per-game toggle, live games included. College: ESPN's top-50 leaderboards merged into one table per group with a conference filter.
+
 ## Notes
 - Favorite teams, theme, season, fantasy format and the roster cache live in your browser's localStorage.
 - Playoff odds, the power index and fantasy points are computed in the page; they are not ESPN's numbers. The power index is an opponent-adjusted (SRS-style) rating in points: average margin (home field removed, capped at 28) plus average opponent rating, solved iteratively; FCS opponents count as −30 in college mode.

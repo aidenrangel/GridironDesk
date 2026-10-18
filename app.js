@@ -300,12 +300,12 @@ document.getElementById('moreBtn').onclick = e => { e.preventDefault(); const ol
 /* ---------- routing ---------- */
 function route() {
   const [r, a, b, c] = (location.hash.slice(1) || 'home').split('/');
-  const alias = { team: 'teams', player: 'players', pcompare: 'players', game: 'scores', odds: 'playoffs', teamstats: 'power', redzone: 'scores', multi: 'scores', sos: 'power', race: 'standings', records: 'leaders', awards: 'leaders', transactions: 'news', accuracy: 'power', recap: 'scores', bowls: 'playoffs' };
+  const alias = { team: 'teams', player: 'players', pcompare: 'players', game: 'scores', odds: 'playoffs', teamstats: 'power', redzone: 'scores', multi: 'scores', sos: 'power', race: 'standings', records: 'leaders', awards: 'leaders', transactions: 'news', accuracy: 'power', recap: 'scores', bowls: 'playoffs', stats: 'leaders' };
   document.querySelectorAll('#nav a, #bnav a, .moremenu a').forEach(x => x.classList.toggle('on', x.dataset.r === (alias[r] || r)));
   clearInterval(refreshTimer); refreshTimer = null; pollFn = null; document.querySelector('.more')?.remove(); if (!((r === 'game' && c === 'theater') || (r === 'multi' && (b === 'theater' || c === 'theater')))) document.body.classList.remove('theater'); stopClocks(); closeAthCard(); document.getElementById('sbanner')?.classList.remove('show'); document.querySelector('.moremenu')?.removeAttribute('open'); document.getElementById('gearMenu')?.removeAttribute('open');
   view.innerHTML = '<div class="panel"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>';
   window.scrollTo(0, 0);
-  const pages = { home, scores, standings, playoffs, odds, power, leaders, players, player, pcompare, teams, team, compare, injuries, news, game: gamecast, fantasy, settings, teamstats, redzone, multi, transactions, sos, race, awards, records, accuracy, recap, bowls };
+  const pages = { home, scores, standings, playoffs, odds, power, leaders, players, player, pcompare, teams, team, compare, injuries, news, game: gamecast, fantasy, settings, teamstats, redzone, multi, transactions, sos, race, awards, records, accuracy, recap, bowls, stats };
   document.querySelectorAll('#nav a').forEach(x => x.toggleAttribute('aria-current', x.classList.contains('on')));
   (pages[r] || home)(a, b, c).catch(e => view.innerHTML = fail(e));
   renderPin();
@@ -1028,57 +1028,115 @@ const LGROUPS = [
   ['Kicking', ['fieldGoalsMade','fieldGoalPct','extraPointsMade','longFieldGoalMade','puntYards','grossAvgPuntYards','kickReturnYards','puntReturnYards']],
 ];
 const lowerBetter = n => /interceptions_thrown|fumbles$|sacks_taken/i.test(n);
-async function leaders(cat) {
-  view.innerHTML = `<div class="bar"><div><h1>League leaders</h1><h2>Loading full leaderboards…</h2></div></div><div class="prog" id="lp"><i style="width:0"></i></div><div class="panel" style="margin-top:14px"><div class="skel"></div><div class="skel"></div></div>`;
-  const cats = (await fullLeaders(p => { const b = document.querySelector('#lp i'); if (b) b.style.width = p * 100 + '%'; })).filter(c => c.leaders?.length);
-  if (!cats.length) { view.innerHTML = '<div class="panel"><div class="empty">Leaders are posted once the season has stats.</div></div>'; return; }
-  const byName = {}; cats.forEach(c => byName[c.name] = c);
-  const groups = LGROUPS.map(([g, names]) => [g, names.map(n => byName[n]).filter(Boolean)]).filter(x => x[1].length);
-  const used = new Set(groups.flatMap(x => x[1].map(c => c.name)));
-  const rest = cats.filter(c => !used.has(c.name)); if (rest.length) groups.push(['More', rest]);
-  let sel = byName[cat] || groups[0][1][0];
-  const grp = groups.find(x => x[1].includes(sel)) || groups[0];
-  const idx = await teamsIndex().catch(() => ({}));
-  // add in-progress box-score numbers (ESPN's season totals only update once a game is final)
-  const lb = await liveBox().catch(() => ({ players: {}, games: [] }));
-  const liveFor = l => liveVal(lb.players[l.athlete.id], sel.name);
-  const dec = /\./.test(sel.leaders[0]?.displayValue || '');
-  const withLive = l => { const add = liveFor(l); return add ? { ...l, value: l.value + add, displayValue: (l.value + add).toFixed(dec ? 1 : 0), liveAdd: add } : l; };
-  if (lb.games.length && LIVE_MAP[sel.name]) { sel = { ...sel, leaders: sel.leaders.map(withLive).sort((a, b) => b.value - a.value) }; }
-  const top = sel.leaders[0]?.value || 1;
-  const positions = [...new Set(sel.leaders.map(l => l.athlete.position?.abbreviation).filter(Boolean))].sort();
-  const teamsIn = [...new Set(sel.leaders.map(l => l.team?.id).filter(Boolean))].map(id => idx[id] || sel.leaders.find(l => l.team?.id === id).team).sort((a, b) => (a.abbreviation || '').localeCompare(b.abbreviation || ''));
-  const tcol = l => colorOf(idx[l.team?.id] || l.team);
-  const pod = (l, i) => l ? `<a class="pod ${i === 0 ? 'first' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${tcol(l)}"><span class="rk">${i + 1}</span><img class="tl" src="${esc(logo(idx[l.team?.id] || l.team))}" alt=""><img class="ph" src="${esc(hsOf(l.athlete))}" alt=""><b>${esc(l.athlete.displayName)}</b><small>${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')}</small><span class="v">${esc(l.displayValue)}${l.liveAdd ? '<small class="livetag">+' + esc(l.liveAdd) + ' live</small>' : ''}</span>${i > 0 && sel.leaders[0] ? `<span class="delta">${esc((l.value - sel.leaders[0].value).toFixed(/\./.test(sel.leaders[0].displayValue) ? 1 : 0))} vs leader</span>` : '<span class="delta">leader</span>'}</a>` : '<div></div>';
-  const [p1, p2, p3] = sel.leaders;
-  const rookieSet = new Set((rosterIndex || []).filter(isRookie).map(p => String(p.id)));
-  let shown = 25, posF = '', teamF = '';
-  view.innerHTML = `<div class="bar"><div><h1>League leaders</h1><h2>${SEASON} regular season</h2></div><input id="pq" placeholder="Find a player" aria-label="Filter players" style="min-width:min(100%,260px)"></div>
-    <div class="lgroups">${groups.map(([g]) => `<button class="${g === grp[0] ? 'on' : ''}" data-g="${esc(g)}">${esc(g)}</button>`).join('')}</div>
-    <div class="lcats" id="lcats">${grp[1].map(c => `<a class="${c === sel ? 'on' : ''}" href="#leaders/${esc(c.name)}">${esc(c.displayName)}</a>`).join('')}</div>
-    <div class="two"><div class="panel">
-      <h3>${esc(sel.displayName)}<span class="pill">${sel.leaders.length} qualifiers${lb.games.length && LIVE_MAP[sel.name] ? ` · <span class="pos"><span class="dot"></span>${lb.games.length} live game${lb.games.length > 1 ? 's' : ''} included</span>` : ''}</span></h3>
-      <div class="podium">${pod(p2, 1)}${pod(p1, 0)}${pod(p3, 2)}</div>
-      <div class="lfilters" style="margin-top:14px"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Filter</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}${rookieSet.size ? '<button class="chip" data-pos="__rookie">Rookies</button>' : ''}<select id="lteam" aria-label="Team" style="margin-left:auto"><option value="">All teams</option>${teamsIn.map(t => `<option value="${esc(t.id)}">${esc(t.abbreviation || t.displayName)}</option>`).join('')}</select></div>
-      <div class="lhead"><span>#</span><span></span><span>Player</span><span>vs leader</span><span>${esc(sel.abbreviation)}</span></div>
-      <div id="mainlist"></div>
-      <div id="morewrap" class="empty" style="padding:12px"><button class="chip" id="sharetop">Share top 10</button> <button class="chip" id="more">${sel.expandable && !sel.expanded ? 'Load ESPN top 50 (FBS)' : 'Show all ' + sel.leaders.length}</button></div>
-    </div>
-    <div class="stack lside">${grp[1].filter(c => c !== sel).slice(0, 4).concat(groups.filter(x => x !== grp).map(x => x[1][0])).slice(0, 5).map(c => `<div class="panel"><h3>${esc(c.displayName)}<a class="lnk" style="font-size:12px;letter-spacing:0;text-transform:none" href="#leaders/${esc(c.name)}">All ${c.leaders.length} →</a></h3>${c.leaders.slice(0, 5).map((l, i) => `<a class="leader" href="#player/${esc(l.athlete.id)}"><span class="rank num">${i + 1}</span><img src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub">${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')}</div></div><span class="val">${esc(l.displayValue)}</span></a>`).join('')}</div>`).join('')}</div></div>`;
-  const row = (l, i) => { const pct = Math.max(2, Math.min(100, l.value / top * 100)); const t = idx[l.team?.id] || l.team; return `<a class="lrow ${isFav(l.team?.id) ? 'me' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${colorOf(t)}"><span class="r ${i < 3 ? 't3' : ''}">${i + 1}</span><img class="ph" src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub"><img src="${esc(logo(t))}" alt="">${esc(l.athlete.position?.abbreviation || '')} · ${esc(t?.abbreviation || '')}</div></div><div class="bar" title="${Math.round(pct)}% of leader"><i style="width:${pct}%"></i></div><span class="v">${esc(l.displayValue)}${l.liveAdd ? `<small class="livetag">incl. +${esc(l.liveAdd)} live</small>` : i > 0 ? `<small>${esc((l.value - top).toFixed(/\./.test(l.displayValue) ? 1 : 0))}</small>` : '<small>leader</small>'}</span></a>`; };
-  const render = () => { const q = document.getElementById('pq').value.toLowerCase();
-    const hits = sel.leaders.filter(l => (!posF || (posF === '__rookie' ? rookieSet.has(String(l.athlete.id)) : l.athlete.position?.abbreviation === posF)) && (!teamF || l.team?.id === teamF) && (!q || (l.athlete.displayName + ' ' + (l.team?.abbreviation || '')).toLowerCase().includes(q)));
-    const lim = (q || posF || teamF) ? 200 : shown;
-    document.getElementById('mainlist').innerHTML = hits.slice(0, lim).map(l => row(l, sel.leaders.indexOf(l))).join('') || '<div class="empty">No players match.</div>';
-    document.getElementById('morewrap').hidden = hits.length <= lim && !(sel.expandable && !sel.expanded); };
-  render();
-  document.getElementById('pq').oninput = render;
-  document.getElementById('sharetop').onclick = () => shareCard({ title: sel.displayName + ' leaders', sub: `${SEASON} ${LEAGUE.name} · top 10`, rows: sel.leaders.slice(0, 10).map((l, i) => ({ left: `${i + 1}. ${l.athlete.displayName}`, mid: `${l.athlete.position?.abbreviation || ''} · ${l.team?.abbreviation || ''}`, right: l.displayValue, hl: i === 0 })) });
-  document.getElementById('more').onclick = async () => { if (sel.expandable && !sel.expanded) { document.getElementById('more').textContent = 'Loading…'; await expandCategory(sel); leaders(cat); return; } shown = 1000; render(); };
-  document.getElementById('lteam').onchange = e => { teamF = e.target.value; render(); };
-  view.querySelectorAll('[data-pos]').forEach(b => b.onclick = () => { posF = b.dataset.pos; view.querySelectorAll('[data-pos]').forEach(x => x.classList.toggle('on', x === b)); render(); });
-  view.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { const g = groups.find(x => x[0] === b.dataset.g); if (g) location.hash = 'leaders/' + g[1][0].name; });
-  if (lb.games.length) poll(() => leaders(cat), false);
+/* leaders page replaced by the Player stats page (v13); #leaders redirects there */
+async function leaders(cat) { const m = { passingYards: 'passing', rushingYards: 'rushing', receivingYards: 'receiving', totalTackles: 'defense', sacks: 'defense', interceptions: 'defense', fieldGoalsMade: 'kicking' }; location.replace('#stats/' + (m[cat] || LGROUPS.find(g => g[1].includes(cat))?.[0]?.toLowerCase() || 'passing')); }
+
+/* =====================================================================
+   v13 · PLAYER STATS: full season tables built from every box score (NFL),
+   or merged ESPN leaderboards (college)
+   ===================================================================== */
+function boxLines(summary) {
+  const out = {}; const g = (c, p, l) => { const i = c.labels.indexOf(l); return i < 0 ? 0 : num(p.stats[i]); }; const sp = (c, p, l) => String(p.stats[c.labels.indexOf(l)] || '0/0').split(/[\/-]/).map(num);
+  (summary.boxscore?.players || []).forEach(side => side.statistics.forEach(c => c.athletes.forEach(p => { const r = (out[p.athlete.id] ||= { n: p.athlete.displayName, pos: p.athlete.position?.abbreviation || '', tid: side.team.id });
+    if (c.name === 'passing') { const ca = sp(c, p, 'C/ATT'), sk = sp(c, p, 'SACKS'); r.pa = [ca[0], ca[1], g(c, p, 'YDS'), g(c, p, 'TD'), g(c, p, 'INT'), sk[0], sk[1]]; }
+    if (c.name === 'rushing') r.ru = [g(c, p, 'CAR'), g(c, p, 'YDS'), g(c, p, 'TD'), g(c, p, 'LONG')];
+    if (c.name === 'receiving') r.re = [g(c, p, 'TGTS'), g(c, p, 'REC'), g(c, p, 'YDS'), g(c, p, 'TD'), g(c, p, 'LONG')];
+    if (c.name === 'defensive') r.de = [g(c, p, 'TOT'), g(c, p, 'SOLO'), g(c, p, 'SACKS'), g(c, p, 'TFL'), g(c, p, 'PD'), g(c, p, 'QB HTS'), g(c, p, 'TD')];
+    if (c.name === 'interceptions') r.in = [g(c, p, 'INT'), g(c, p, 'YDS'), g(c, p, 'TD')];
+    if (c.name === 'fumbles') r.fu = [g(c, p, 'FUM'), g(c, p, 'LOST'), g(c, p, 'REC')];
+    if (c.name === 'kicking') { const fg = sp(c, p, 'FG'), xp = sp(c, p, 'XP'); r.ki = [fg[0], fg[1], g(c, p, 'LONG'), xp[0], xp[1], g(c, p, 'PTS')]; }
+    if (c.name === 'punting') r.pu = [g(c, p, 'NO'), g(c, p, 'YDS'), g(c, p, 'TB'), g(c, p, 'In 20'), g(c, p, 'LONG')];
+    if (c.name === 'kickReturns') r.kr = [g(c, p, 'NO'), g(c, p, 'YDS'), g(c, p, 'TD'), g(c, p, 'LONG')];
+    if (c.name === 'puntReturns') r.pr = [g(c, p, 'NO'), g(c, p, 'YDS'), g(c, p, 'TD'), g(c, p, 'LONG')];
+  }))); return out;
+}
+let statsCache = null, statsLoading = null;
+async function seasonStats(onProgress) {
+  const key = LEAGUE.key + ':' + SEASON; if (statsCache?.key === key && Date.now() - statsCache.t < 45000) return statsCache.v; if (statsLoading) return statsLoading;
+  statsLoading = (async () => {
+    const all = (await seasonGames()).filter(e => !e._post && e.status?.type?.state !== 'pre'); let done = 0; const agg = {}; let live = 0;
+    const add = (dst, src, k) => { if (!src[k]) return; dst[k] = dst[k] || src[k].map(() => 0); src[k].forEach((v, i) => { if (k === 'ru' && i === 3 || k === 're' && i === 4 || k === 'ki' && i === 2 || k === 'pu' && i === 4 || k === 'kr' && i === 3 || k === 'pr' && i === 3) dst[k][i] = Math.max(dst[k][i], v); else dst[k][i] += v; }); };
+    await Promise.all(all.map(async ev => { try { const L = (await gameLines(ev)).s || {}; if (ev.status.type.state === 'in') live++;
+        Object.entries(L).forEach(([pid, r]) => { const a = (agg[pid] ||= { id: pid, name: r.n, pos: r.pos, tid: r.tid, gp: 0, live: false }); a.gp++; a.tid = r.tid; if (r.pos) a.pos = r.pos; if (ev.status.type.state === 'in') a.live = true; ['pa', 'ru', 're', 'de', 'in', 'fu', 'ki', 'pu', 'kr', 'pr'].forEach(k => add(a, r, k)); }); } catch {} done++; onProgress?.(done / all.length); }));
+    const v = { rows: Object.values(agg), games: all.length, live }; statsCache = { key, t: Date.now(), v }; statsLoading = null; return v;
+  })(); return statsLoading;
+}
+const passerRating = (cmp, att, yds, td, int) => { if (!att) return 0; const cl = v => Math.max(0, Math.min(2.375, v)); return (cl((cmp / att - .3) * 5) + cl((yds / att - 3) * .25) + cl(td / att * 20) + cl(2.375 - int / att * 25)) / 6 * 100; };
+const STAT_CATS = {
+  passing: { name: 'Passing', key: 'pa', main: 'yds', qual: (r, w) => r.att >= 10 * w, derive: r => { const [cmp, att, yds, td, int, sk, skY] = r.pa; return { cmp, att, yds, td, int, sk, skY, cmpPct: att ? cmp / att * 100 : 0, ya: att ? yds / att : 0, rtg: passerRating(cmp, att, yds, td, int), ypg: yds / r.gp, rushYds: r.ru?.[1] || 0, rushTd: r.ru?.[2] || 0 }; },
+    cols: [['GP', 'gp'], ['CMP', 'cmp'], ['ATT', 'att'], ['CMP%', 'cmpPct', 1], ['YDS', 'yds'], ['Y/A', 'ya', 1], ['TD', 'td'], ['INT', 'int', 0, 'low'], ['SACK', 'sk', 0, 'low'], ['RTG', 'rtg', 1], ['YDS/G', 'ypg', 1], ['RUSH YDS', 'rushYds'], ['RUSH TD', 'rushTd']], perGame: ['cmp', 'att', 'yds', 'td', 'int', 'sk', 'rushYds', 'rushTd'] },
+  rushing: { name: 'Rushing', key: 'ru', main: 'yds', qual: (r, w) => r.car >= 6 * w, derive: r => { const [car, yds, td, lng] = r.ru; return { car, yds, td, lng, avg: car ? yds / car : 0, ypg: yds / r.gp, rec: r.re?.[1] || 0, recYds: r.re?.[2] || 0, scrim: yds + (r.re?.[2] || 0), tdAll: td + (r.re?.[3] || 0), fum: r.fu?.[1] || 0 }; },
+    cols: [['GP', 'gp'], ['CAR', 'car'], ['YDS', 'yds'], ['AVG', 'avg', 1], ['TD', 'td'], ['LONG', 'lng'], ['YDS/G', 'ypg', 1], ['REC', 'rec'], ['REC YDS', 'recYds'], ['SCRIM', 'scrim'], ['TOTAL TD', 'tdAll'], ['FUM L', 'fum', 0, 'low']], perGame: ['car', 'yds', 'td', 'rec', 'recYds', 'scrim', 'tdAll'] },
+  receiving: { name: 'Receiving', key: 're', main: 'yds', qual: (r, w) => r.tgt >= 3 * w, derive: r => { const [tgt, rec, yds, td, lng] = r.re; return { tgt, rec, yds, td, lng, avg: rec ? yds / rec : 0, catchPct: tgt ? rec / tgt * 100 : 0, ypg: yds / r.gp, ypt: tgt ? yds / tgt : 0, rushYds: r.ru?.[1] || 0, scrim: yds + (r.ru?.[1] || 0) }; },
+    cols: [['GP', 'gp'], ['TGT', 'tgt'], ['REC', 'rec'], ['YDS', 'yds'], ['AVG', 'avg', 1], ['TD', 'td'], ['LONG', 'lng'], ['CATCH%', 'catchPct', 1], ['Y/TGT', 'ypt', 1], ['YDS/G', 'ypg', 1], ['RUSH YDS', 'rushYds'], ['SCRIM', 'scrim']], perGame: ['tgt', 'rec', 'yds', 'td', 'rushYds', 'scrim'] },
+  defense: { name: 'Defense', key: 'de', main: 'tot', qual: (r, w) => r.tot >= 2 * w, derive: r => { const [tot, solo, sk, tfl, pd, qbh, td] = r.de; return { tot, solo, ast: tot - solo, sk, tfl, pd, qbh, int: r.in?.[0] || 0, intYds: r.in?.[1] || 0, fr: r.fu?.[2] || 0, dtd: td + (r.in?.[2] || 0), tpg: tot / r.gp }; },
+    cols: [['GP', 'gp'], ['TOT', 'tot'], ['SOLO', 'solo'], ['AST', 'ast'], ['TKL/G', 'tpg', 1], ['SACKS', 'sk', 1], ['TFL', 'tfl'], ['PD', 'pd'], ['QB HITS', 'qbh'], ['INT', 'int'], ['INT YDS', 'intYds'], ['FR', 'fr'], ['TD', 'dtd']], perGame: ['tot', 'solo', 'ast', 'sk', 'tfl', 'pd', 'qbh'] },
+  kicking: { name: 'Kicking', key: 'ki', main: 'pts', qual: (r, w) => r.fga + r.xpa >= 2 * w, derive: r => { const [fgm, fga, lng, xpm, xpa, pts] = r.ki; return { fgm, fga, lng, xpm, xpa, pts, fgPct: fga ? fgm / fga * 100 : 0, xpPct: xpa ? xpm / xpa * 100 : 0, ppg: pts / r.gp }; },
+    cols: [['GP', 'gp'], ['FGM', 'fgm'], ['FGA', 'fga'], ['FG%', 'fgPct', 1], ['LONG', 'lng'], ['XPM', 'xpm'], ['XPA', 'xpa'], ['XP%', 'xpPct', 1], ['PTS', 'pts'], ['PTS/G', 'ppg', 1]], perGame: ['fgm', 'fga', 'xpm', 'xpa', 'pts'] },
+  punting: { name: 'Punting', key: 'pu', main: 'avg', qual: (r, w) => r.no >= 2 * w, derive: r => { const [no, yds, tb, in20, lng] = r.pu; return { no, yds, tb, in20, lng, avg: no ? yds / no : 0, in20Pct: no ? in20 / no * 100 : 0 }; },
+    cols: [['GP', 'gp'], ['PUNTS', 'no'], ['YDS', 'yds'], ['AVG', 'avg', 1], ['LONG', 'lng'], ['IN 20', 'in20'], ['IN 20%', 'in20Pct', 1], ['TB', 'tb', 0, 'low']], perGame: ['no', 'yds', 'in20', 'tb'] },
+  returns: { name: 'Returns', key: 'kr', alt: 'pr', main: 'totYds', qual: (r, w) => r.krNo + r.prNo >= w, derive: r => { const kr = r.kr || [0, 0, 0, 0], pr = r.pr || [0, 0, 0, 0]; return { krNo: kr[0], krYds: kr[1], krAvg: kr[0] ? kr[1] / kr[0] : 0, krTd: kr[2], krLng: kr[3], prNo: pr[0], prYds: pr[1], prAvg: pr[0] ? pr[1] / pr[0] : 0, prTd: pr[2], prLng: pr[3], totYds: kr[1] + pr[1], td: kr[2] + pr[2] }; },
+    cols: [['GP', 'gp'], ['KR', 'krNo'], ['KR YDS', 'krYds'], ['KR AVG', 'krAvg', 1], ['KR LONG', 'krLng'], ['PR', 'prNo'], ['PR YDS', 'prYds'], ['PR AVG', 'prAvg', 1], ['PR LONG', 'prLng'], ['RET YDS', 'totYds'], ['TD', 'td']], perGame: ['krNo', 'krYds', 'prNo', 'prYds', 'totYds'] },
+};
+const guessPos = r => r.pa && r.pa[1] >= 5 ? 'QB' : r.ki ? 'K' : r.pu ? 'P' : r.de && (!r.re || r.de[0] > (r.re[1] || 0)) ? 'DEF' : r.ru && r.ru[0] > (r.re?.[1] || 0) ? 'RB' : r.re ? 'WR' : '';
+async function stats(cat, sub) {
+  if (isCFB()) return statsCFB(cat);
+  const C = STAT_CATS[cat] || STAT_CATS.passing; cat = C === STAT_CATS[cat] ? cat : 'passing';
+  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>Building season totals from every box score…</h2></div></div><div class="prog" id="sp"><i style="width:0"></i></div><div class="panel"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`;
+  const [data, idx, calF] = await Promise.all([seasonStats(p => { const b = document.querySelector('#sp i'); if (b) b.style.width = p * 100 + '%'; }), teamsIndex(), seasonCalendar().catch(() => null)]);
+  const roster = await allRosters().catch(() => []); const byId = {}; roster.forEach(p => byId[p.id] = p);
+  const wk = Math.max(1, (calF?.cur || 1) - (data.live ? 0 : 1));
+  const rows = data.rows.filter(r => r[C.key] || (C.alt && r[C.alt])).map(r => { const base = { ...r, [C.key]: r[C.key] || null }; if (C.alt && !base[C.key]) base[C.key] = [0, 0, 0, 0]; const d = C.derive(base); const rp = byId[r.id]; const pos = rp?.pos || r.pos || guessPos(r); const team = idx[rp?.team?.id || r.tid] || idx[r.tid] || { id: r.tid, abbreviation: '' }; return { ...r, ...d, pos, team, hs: rp?.hs || hsOf({ id: r.id }), rookie: isRookie(rp) }; });
+  const positions = [...new Set(rows.map(r => r.pos).filter(Boolean))].sort(); const teams = [...new Set(rows.map(r => r.team?.id).filter(Boolean))].map(id => idx[id]).filter(Boolean).sort((a, b) => a.abbreviation.localeCompare(b.abbreviation));
+  const S = { sort: C.main, dir: -1, pos: '', team: '', q: '', qual: true, pg: false, shown: 100, rookies: false };
+  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>${SEASON} season · every player, every game${data.live ? ` · <span class="pos"><span class="dot"></span>${data.live} live game${data.live > 1 ? 's' : ''} included</span>` : ''}</h2></div><div class="row"><a class="chip" href="#records">Records watch</a><a class="chip" href="#fantasy/season">Fantasy</a><button class="chip" id="sharetop">Share top 10</button></div></div>
+    <div class="lgroups">${Object.entries(STAT_CATS).map(([k, c]) => `<a class="${k === cat ? 'on' : ''}" href="#stats/${k}">${c.name}</a>`).join('')}</div>
+    <div class="panel"><div class="lfilters"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Pos</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}${roster.length ? '<button class="chip" id="rook">Rookies</button>' : ''}
+        <select id="steam" aria-label="Team" style="margin-left:auto"><option value="">All teams</option>${teams.map(t => `<option value="${esc(t.id)}">${esc(t.abbreviation)}</option>`).join('')}</select><input id="sq" placeholder="Find a player" aria-label="Find a player" style="padding:5px 8px;font-size:13px;width:150px"></div>
+      <div class="lfilters" style="border-top:1px solid var(--line)"><label class="row" style="font-size:13px"><input type="checkbox" id="squal" checked> Qualified only</label><label class="row" style="font-size:13px"><input type="checkbox" id="spg"> Per game</label><span class="muted" style="font-size:12px;margin-left:auto" id="scount"></span></div>
+      <div class="tw"><table id="st" class="stats"><thead><tr><th>#</th><th>Player</th>${C.cols.map(([l, k, dec, low]) => `<th class="num sort ${k === S.sort ? 'sorted' : ''}" data-k="${k}" title="${low ? 'lower is better' : ''}">${l}</th>`).join('')}</tr></thead><tbody></tbody></table></div>
+      <div class="empty" id="smore" style="padding:12px"><button class="chip" id="smorebtn">Show all</button></div></div>
+    <p class="note">Season totals are summed from ESPN's box score for every game, so they include games in progress and update as they happen. Qualified = roughly ${C.name === 'Passing' ? '10 attempts' : C.name === 'Rushing' ? '6 carries' : C.name === 'Receiving' ? '3 targets' : C.name === 'Defense' ? '2 tackles' : 'regular use'} per team game. RTG is the NFL passer rating formula. Click a column to sort; click again to flip.</p>`;
+  const fmt = (r, [l, k, dec]) => { let v = r[k]; if (S.pg && C.perGame.includes(k)) { v = v / r.gp; dec = 1; } return dec ? v.toFixed(dec) : String(Math.round(v)); };
+  const filt = () => rows.filter(r => (!S.pos || r.pos === S.pos) && (!S.team || r.team?.id === S.team) && (!S.rookies || r.rookie) && (!S.qual || C.qual(r, wk)) && (!S.q || (r.name + ' ' + (r.team?.abbreviation || '')).toLowerCase().includes(S.q)));
+  const val = (r, k) => S.pg && C.perGame.includes(k) ? r[k] / r.gp : r[k];
+  const draw = () => { const list = filt().sort((a, b) => (val(b, S.sort) - val(a, S.sort)) * -S.dir || b[C.main] - a[C.main]); const lim = S.q ? 300 : S.shown;
+    document.getElementById('st').querySelector('tbody').innerHTML = list.slice(0, lim).map((r, i) => `<tr class="clk ${isFav(r.team?.id) ? 'fav' : ''}" data-p="${esc(r.id)}"><td class="num muted">${i + 1}</td><td class="tm"><img src="${esc(r.hs)}" alt="" style="border-radius:50%" loading="lazy" onerror="this.style.visibility='hidden'"><div class="sp"><b>${esc(r.name)}${r.live ? ' <span class="dot" title="playing now"></span>' : ''}</b><small>${esc(r.pos)} · <img src="${esc(logo(r.team))}" alt="">${esc(r.team?.abbreviation || '')}${r.rookie ? ' · <em class="rk">R</em>' : ''}</small></div></td>${C.cols.map(c => `<td class="num ${c[1] === S.sort ? 'sorted' : ''}">${fmt(r, c)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${C.cols.length + 2}" class="empty">No players match.</td></tr>`;
+    document.getElementById('scount').textContent = `${list.length} players · ${data.games} games`; document.getElementById('smore').hidden = list.length <= lim; document.querySelectorAll('#st th[data-k]').forEach(th => th.classList.toggle('sorted', th.dataset.k === S.sort)); wire(); };
+  draw();
+  view.querySelectorAll('#st th[data-k]').forEach(th => th.onclick = () => { const low = C.cols.find(c => c[1] === th.dataset.k)?.[3] === 'low'; if (S.sort === th.dataset.k) S.dir = -S.dir; else { S.sort = th.dataset.k; S.dir = low ? 1 : -1; } draw(); });
+  view.querySelectorAll('[data-pos]').forEach(b => b.onclick = () => { S.pos = b.dataset.pos; view.querySelectorAll('[data-pos]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  const rk = document.getElementById('rook'); if (rk) rk.onclick = () => { S.rookies = !S.rookies; rk.classList.toggle('on', S.rookies); draw(); };
+  document.getElementById('steam').onchange = e => { S.team = e.target.value; draw(); }; document.getElementById('sq').oninput = e => { S.q = e.target.value.toLowerCase(); draw(); };
+  document.getElementById('squal').onchange = e => { S.qual = e.target.checked; draw(); }; document.getElementById('spg').onchange = e => { S.pg = e.target.checked; draw(); };
+  document.getElementById('smorebtn').onclick = () => { S.shown = 5000; draw(); };
+  document.getElementById('sharetop').onclick = () => { const list = filt().sort((a, b) => val(b, S.sort) - val(a, S.sort)).slice(0, 10); const col = C.cols.find(c => c[1] === S.sort); shareCard({ title: `${C.name} · ${col?.[0] || S.sort} leaders`, sub: `${SEASON} NFL${S.pos ? ' · ' + S.pos : ''}${S.pg ? ' · per game' : ''}`, rows: list.map((r, i) => ({ left: `${i + 1}. ${r.name}`, mid: `${r.pos} · ${r.team?.abbreviation || ''} · ${r.gp} GP`, right: fmt(r, col || C.cols[0]), hl: i === 0 })) }); };
+  if (data.live) poll(() => stats(cat), false);
+}
+/* college: merge ESPN's leaderboards (FBS, top 50 per stat) into one table per group */
+async function statsCFB(cat) {
+  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>Loading ESPN leaderboards…</h2></div></div><div class="prog" id="lp"><i style="width:0"></i></div><div class="panel"><div class="skel"></div><div class="skel"></div></div>`;
+  const cats = (await fullLeaders(p => { const b = document.querySelector('#lp i'); if (b) b.style.width = p * 100 + '%'; })).filter(c => c.leaders?.length); const idx = await teamsIndex().catch(() => ({}));
+  const groups = LGROUPS.map(([g, names]) => [g, names.map(n => cats.find(c => c.name === n)).filter(Boolean)]).filter(x => x[1].length);
+  const grp = groups.find(x => x[0].toLowerCase() === String(cat || '').toLowerCase()) || groups[0]; const key = grp[0].toLowerCase();
+  const expanded = await Promise.all(grp[1].map(c => c.expandable && !c.expanded ? expandCategory(c).catch(() => c) : c));
+  const rows = {}; expanded.forEach((c, ci) => c.leaders.forEach(l => { const r = (rows[l.athlete.id] ||= { id: l.athlete.id, name: l.athlete.displayName, pos: l.athlete.position?.abbreviation || '', team: idx[l.team?.id] || l.team, hs: hsOf(l.athlete), v: {} }); r.v[c.name] = { n: l.value, d: l.displayValue }; }));
+  const list = Object.values(rows); const main = expanded[0].name; const positions = [...new Set(list.map(r => r.pos).filter(Boolean))].sort(); const confs = [...new Set(list.map(r => r.team?.confName || r.team?.conf).filter(Boolean))].sort((a, b) => confOrder({ name: a }, { name: b }));
+  const S = { sort: main, dir: -1, pos: '', conf: '', q: '' };
+  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>${SEASON} FBS · ESPN's top 50 in each ${grp[0].toLowerCase()} stat, merged</h2></div><div class="row"><a class="chip" href="#records">Records watch</a><button class="chip" id="sharetop">Share top 10</button></div></div>
+    <div class="lgroups">${groups.map(([g]) => `<a class="${g === grp[0] ? 'on' : ''}" href="#stats/${g.toLowerCase()}">${g}</a>`).join('')}</div>
+    <div class="panel"><div class="lfilters"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Pos</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}<select id="sconf" aria-label="Conference" style="margin-left:auto"><option value="">All conferences</option>${confs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select><input id="sq" placeholder="Find a player" style="padding:5px 8px;font-size:13px;width:150px"></div>
+      <div class="tw"><table id="st" class="stats"><thead><tr><th>#</th><th>Player</th>${expanded.map(c => `<th class="num sort" data-k="${esc(c.name)}" title="${esc(c.displayName)}">${esc(c.abbreviation || c.displayName)}</th>`).join('')}</tr></thead><tbody></tbody></table></div></div>
+    <p class="note">ESPN publishes a top 50 per stat for college football rather than full totals, so a blank cell means the player is outside the top 50 in that stat. Click a column to sort.</p>`;
+  const filt = () => list.filter(r => (!S.pos || r.pos === S.pos) && (!S.conf || (r.team?.confName || r.team?.conf) === S.conf) && (!S.q || (r.name + ' ' + (r.team?.abbreviation || '')).toLowerCase().includes(S.q)));
+  const draw = () => { const l = filt().sort((a, b) => ((b.v[S.sort]?.n ?? -1e9) - (a.v[S.sort]?.n ?? -1e9)) * -S.dir);
+    document.getElementById('st').querySelector('tbody').innerHTML = l.slice(0, 200).map((r, i) => `<tr class="clk ${isFav(r.team?.id) ? 'fav' : ''}" data-p="${esc(r.id)}"><td class="num muted">${i + 1}</td><td class="tm"><img src="${esc(r.hs)}" alt="" style="border-radius:50%" loading="lazy" onerror="this.style.visibility='hidden'"><div class="sp"><b>${esc(r.name)}</b><small>${esc(r.pos)} · <img src="${esc(logo(r.team))}" alt="">${esc(r.team?.abbreviation || '')}</small></div></td>${expanded.map(c => `<td class="num ${c.name === S.sort ? 'sorted' : ''}">${r.v[c.name] ? esc(r.v[c.name].d) : '<span class="muted">–</span>'}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${expanded.length + 2}" class="empty">No players match.</td></tr>`;
+    document.querySelectorAll('#st th[data-k]').forEach(th => th.classList.toggle('sorted', th.dataset.k === S.sort)); wire(); };
+  draw();
+  view.querySelectorAll('#st th[data-k]').forEach(th => th.onclick = () => { if (S.sort === th.dataset.k) S.dir = -S.dir; else { S.sort = th.dataset.k; S.dir = -1; } draw(); });
+  view.querySelectorAll('[data-pos]').forEach(b => b.onclick = () => { S.pos = b.dataset.pos; view.querySelectorAll('[data-pos]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  document.getElementById('sconf').onchange = e => { S.conf = e.target.value; draw(); }; document.getElementById('sq').oninput = e => { S.q = e.target.value.toLowerCase(); draw(); };
+  document.getElementById('sharetop').onclick = () => { const l = filt().sort((a, b) => (b.v[S.sort]?.n ?? -1e9) - (a.v[S.sort]?.n ?? -1e9)).slice(0, 10); const c = expanded.find(x => x.name === S.sort); shareCard({ title: `${c?.displayName || grp[0]} leaders`, sub: `${SEASON} FBS`, rows: l.map((r, i) => ({ left: `${i + 1}. ${r.name}`, mid: `${r.pos} · ${r.team?.abbreviation || ''}`, right: r.v[S.sort]?.d || '', hl: i === 0 })) }); };
 }
 
 /* ---------- players (search) ---------- */
@@ -1891,12 +1949,12 @@ function importSettings(txt) { const j = JSON.parse(txt); if (j?.app !== 'gridir
 
 /* ---------- 19 · one summary fetch per game, shared by fantasy / awards / usage ---------- */
 async function gameLines(ev) {
-  const key = LK('gl2:' + ev.id); const done = ev.status?.type?.completed; let c = done ? store.get(key, null) : null; if (c) return c;
+  const key = LK('gl3:' + ev.id); const done = ev.status?.type?.completed; let c = done ? store.get(key, null) : null; if (c) return c;
   const s = await getJSON(`${API}/summary?event=${ev.id}`, done ? 86400000 : 60000);
   const usage = {}; (s.boxscore?.players || []).forEach(side => { const t = { tg: 0, car: 0, p: {} }; const rec = side.statistics.find(x => x.name === 'receiving'), ru = side.statistics.find(x => x.name === 'rushing'); const ti = rec?.labels.indexOf('TGTS') ?? -1, ri = rec?.labels.indexOf('REC') ?? -1, ryi = rec?.labels.indexOf('YDS') ?? -1, ci = ru?.labels.indexOf('CAR') ?? -1, ruyi = ru?.labels.indexOf('YDS') ?? -1;
     (rec?.athletes || []).forEach(a => { const tg = ti >= 0 ? num(a.stats[ti]) : 0; t.tg += tg; const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0]); r[0] += tg; r[2] += num(a.stats[ri]); r[3] += num(a.stats[ryi]); });
     (ru?.athletes || []).forEach(a => { const car = num(a.stats[ci]); t.car += car; const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0]); r[1] += car; r[3] += num(a.stats[ruyi]); }); usage[side.team.id] = t; });
-  c = { f: fantasyFromBox(s), a: awardLines(s), u: usage }; if (done && Object.keys(c.f).length) store.set(key, c); return c;
+  c = { f: fantasyFromBox(s), a: awardLines(s), u: usage, s: boxLines(s) }; if (done && Object.keys(c.f).length) store.set(key, c); return c;
 }
 
 /* ---------- fantasy ---------- */
@@ -2089,7 +2147,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '12.4';
+const APP_VERSION = '13.0';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
