@@ -1051,15 +1051,22 @@ function boxLines(summary) {
   }))); return out;
 }
 let statsCache = null, statsLoading = null;
-async function seasonStats(onProgress) {
-  const key = LEAGUE.key + ':' + SEASON; if (statsCache?.key === key && Date.now() - statsCache.t < 45000) return statsCache.v; if (statsLoading) return statsLoading;
-  statsLoading = (async () => {
-    const all = (await seasonGames()).filter(e => !e._post && e.status?.type?.state !== 'pre'); let done = 0; const agg = {}; let live = 0;
+const STAT_SCOPES = () => [['top25', 'Top 25'], ['p4', 'Power 4'], ...CONF_KEYS.map((k, i) => [k, P4[i][0]]), ['all', 'All FBS']];
+function scopeFilter(scope, idx) {
+  if (!isCFB() || !scope || scope === 'all') return () => true;
+  const confKey = tid => { const t = idx[tid]; const i = t ? p4Index({ name: t.confName || t.conf, abbreviation: t.conf }) : -1; return i >= 0 ? CONF_KEYS[i] : ''; };
+  return ev => ev.competitions[0].competitors.some(c => scope === 'top25' ? num(c.curatedRank?.current) > 0 && num(c.curatedRank.current) <= 25 : scope === 'p4' ? !!confKey(c.team.id) : confKey(c.team.id) === scope);
+}
+async function seasonStats(onProgress, scope = '') {
+  const key = LEAGUE.key + ':' + SEASON + ':' + scope; if (statsCache?.key === key && Date.now() - statsCache.t < 45000) return statsCache.v; if (statsLoading?.key === key) return statsLoading.p;
+  const p = (async () => {
+    const idx = await teamsIndex().catch(() => ({})); const all = (await seasonGames()).filter(e => !e._post && e.status?.type?.state !== 'pre').filter(scopeFilter(scope, idx)); let done = 0; const agg = {}; let live = 0;
     const add = (dst, src, k) => { if (!src[k]) return; dst[k] = dst[k] || src[k].map(() => 0); src[k].forEach((v, i) => { if (k === 'ru' && i === 3 || k === 're' && i === 4 || k === 'ki' && i === 2 || k === 'pu' && i === 4 || k === 'kr' && i === 3 || k === 'pr' && i === 3) dst[k][i] = Math.max(dst[k][i], v); else dst[k][i] += v; }); };
-    await Promise.all(all.map(async ev => { try { const L = (await gameLines(ev)).s || {}; if (ev.status.type.state === 'in') live++;
-        Object.entries(L).forEach(([pid, r]) => { const a = (agg[pid] ||= { id: pid, name: r.n, pos: r.pos, tid: r.tid, gp: 0, live: false }); a.gp++; a.tid = r.tid; if (r.pos) a.pos = r.pos; if (ev.status.type.state === 'in') a.live = true; ['pa', 'ru', 're', 'de', 'in', 'fu', 'ki', 'pu', 'kr', 'pr'].forEach(k => add(a, r, k)); }); } catch {} done++; onProgress?.(done / all.length); }));
+    const work = async ev => { try { const L = (await gameLines(ev)).s || {}; if (ev.status.type.state === 'in') live++;
+        Object.entries(L).forEach(([pid, r]) => { const a = (agg[pid] ||= { id: pid, name: r.n, pos: r.pos, tid: r.tid, gp: 0, live: false }); a.gp++; a.tid = r.tid; if (r.pos) a.pos = r.pos; if (ev.status.type.state === 'in') a.live = true; ['pa', 'ru', 're', 'de', 'in', 'fu', 'ki', 'pu', 'kr', 'pr'].forEach(k => add(a, r, k)); }); } catch {} done++; onProgress?.(done / all.length); };
+    for (let i = 0; i < all.length; i += 12) await Promise.all(all.slice(i, i + 12).map(work));
     const v = { rows: Object.values(agg), games: all.length, live }; statsCache = { key, t: Date.now(), v }; statsLoading = null; return v;
-  })(); return statsLoading;
+  })(); statsLoading = { key, p }; return p;
 }
 const passerRating = (cmp, att, yds, td, int) => { if (!att) return 0; const cl = v => Math.max(0, Math.min(2.375, v)); return (cl((cmp / att - .3) * 5) + cl((yds / att - 3) * .25) + cl(td / att * 20) + cl(2.375 - int / att * 25)) / 6 * 100; };
 const STAT_CATS = {
@@ -1080,23 +1087,24 @@ const STAT_CATS = {
 };
 const guessPos = r => r.pa && r.pa[1] >= 5 ? 'QB' : r.ki ? 'K' : r.pu ? 'P' : r.de && (!r.re || r.de[0] > (r.re[1] || 0)) ? 'DEF' : r.ru && r.ru[0] > (r.re?.[1] || 0) ? 'RB' : r.re ? 'WR' : '';
 async function stats(cat, sub) {
-  if (isCFB()) return statsCFB(cat);
   const C = STAT_CATS[cat] || STAT_CATS.passing; cat = C === STAT_CATS[cat] ? cat : 'passing';
-  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>Building season totals from every box score…</h2></div></div><div class="prog" id="sp"><i style="width:0"></i></div><div class="panel"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`;
-  const [data, idx, calF] = await Promise.all([seasonStats(p => { const b = document.querySelector('#sp i'); if (b) b.style.width = p * 100 + '%'; }), teamsIndex(), seasonCalendar().catch(() => null)]);
+  const scope = isCFB() ? (STAT_SCOPES().some(x => x[0] === sub) ? sub : store.get(LK('statsScope'), 'top25')) : ''; if (isCFB()) store.set(LK('statsScope'), scope);
+  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>Building season totals from every box score…${scope === 'all' ? ' (all of FBS: this first load takes a minute)' : ''}</h2></div></div><div class="prog" id="sp"><i style="width:0"></i></div><div class="panel"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`;
+  const [data, idx, calF] = await Promise.all([seasonStats(p => { const b = document.querySelector('#sp i'); if (b) b.style.width = p * 100 + '%'; }, scope), teamsIndex(), seasonCalendar().catch(() => null)]);
   const roster = await allRosters().catch(() => []); const byId = {}; roster.forEach(p => byId[p.id] = p);
   const wk = Math.max(1, (calF?.cur || 1) - (data.live ? 0 : 1));
   const rows = data.rows.filter(r => r[C.key] || (C.alt && r[C.alt])).map(r => { const base = { ...r, [C.key]: r[C.key] || null }; if (C.alt && !base[C.key]) base[C.key] = [0, 0, 0, 0]; const d = C.derive(base); const rp = byId[r.id]; const pos = rp?.pos || r.pos || guessPos(r); const team = idx[rp?.team?.id || r.tid] || idx[r.tid] || { id: r.tid, abbreviation: '' }; return { ...r, ...d, pos, team, hs: rp?.hs || hsOf({ id: r.id }), rookie: isRookie(rp) }; });
   const positions = [...new Set(rows.map(r => r.pos).filter(Boolean))].sort(); const teams = [...new Set(rows.map(r => r.team?.id).filter(Boolean))].map(id => idx[id]).filter(Boolean).sort((a, b) => a.abbreviation.localeCompare(b.abbreviation));
   const S = { sort: C.main, dir: -1, pos: '', team: '', q: '', qual: true, pg: false, shown: 100, rookies: false };
-  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>${SEASON} season · every player, every game${data.live ? ` · <span class="pos"><span class="dot"></span>${data.live} live game${data.live > 1 ? 's' : ''} included</span>` : ''}</h2></div><div class="row"><a class="chip" href="#records">Records watch</a><a class="chip" href="#fantasy/season">Fantasy</a><button class="chip" id="sharetop">Share top 10</button></div></div>
-    <div class="lgroups">${Object.entries(STAT_CATS).map(([k, c]) => `<a class="${k === cat ? 'on' : ''}" href="#stats/${k}">${c.name}</a>`).join('')}</div>
+  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>${SEASON} season · ${isCFB() ? (STAT_SCOPES().find(x => x[0] === scope)?.[1] || '') + ' games · every player in them' : 'every player, every game'}${data.live ? ` · <span class="pos"><span class="dot"></span>${data.live} live game${data.live > 1 ? 's' : ''} included</span>` : ''}</h2></div><div class="row"><a class="chip" href="#records">Records watch</a><a class="chip" href="#fantasy/season">Fantasy</a><button class="chip" id="sharetop">Share top 10</button></div></div>
+    <div class="lgroups">${Object.entries(STAT_CATS).map(([k, c]) => `<a class="${k === cat ? 'on' : ''}" href="#stats/${k}${scope ? '/' + scope : ''}">${c.name}</a>`).join('')}</div>
+    ${isCFB() ? `<div class="chips" style="margin-bottom:var(--s3)"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em;align-self:center">Games from</span>${STAT_SCOPES().map(([k, l]) => `<a class="chip ${k === scope ? 'on' : ''}" href="#stats/${cat}/${k}">${l}</a>`).join('')}</div>` : ''}
     <div class="panel"><div class="lfilters"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Pos</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}${roster.length ? '<button class="chip" id="rook">Rookies</button>' : ''}
         <select id="steam" aria-label="Team" style="margin-left:auto"><option value="">All teams</option>${teams.map(t => `<option value="${esc(t.id)}">${esc(t.abbreviation)}</option>`).join('')}</select><input id="sq" placeholder="Find a player" aria-label="Find a player" style="padding:5px 8px;font-size:13px;width:150px"></div>
       <div class="lfilters" style="border-top:1px solid var(--line)"><label class="row" style="font-size:13px"><input type="checkbox" id="squal" checked> Qualified only</label><label class="row" style="font-size:13px"><input type="checkbox" id="spg"> Per game</label><span class="muted" style="font-size:12px;margin-left:auto" id="scount"></span></div>
       <div class="tw"><table id="st" class="stats"><thead><tr><th>#</th><th>Player</th>${C.cols.map(([l, k, dec, low]) => `<th class="num sort ${k === S.sort ? 'sorted' : ''}" data-k="${k}" title="${low ? 'lower is better' : ''}">${l}</th>`).join('')}</tr></thead><tbody></tbody></table></div>
       <div class="empty" id="smore" style="padding:12px"><button class="chip" id="smorebtn">Show all</button></div></div>
-    <p class="note">Season totals are summed from ESPN's box score for every game, so they include games in progress and update as they happen. Qualified = roughly ${C.name === 'Passing' ? '10 attempts' : C.name === 'Rushing' ? '6 carries (3 for non-RBs)' : C.name === 'Receiving' ? '3 targets for WR/TE, 1.5 for backs and others' : C.name === 'Defense' ? '2 tackles' : 'regular use'} per team game; untick it to see everyone. RTG is the NFL passer rating formula. Click a column to sort; click again to flip.</p>`;
+    <p class="note">Season totals are summed from ESPN's box score for every game${isCFB() ? ' in the selected scope (a player\'s games outside it are not counted, so pick the team\'s own conference or All FBS for true season totals)' : ''}, so they include games in progress and update as they happen. Qualified = roughly ${C.name === 'Passing' ? '10 attempts' : C.name === 'Rushing' ? '6 carries (3 for non-RBs)' : C.name === 'Receiving' ? '3 targets for WR/TE, 1.5 for backs and others' : C.name === 'Defense' ? '2 tackles' : 'regular use'} per team game; untick it to see everyone. RTG is the NFL passer rating formula. Click a column to sort; click again to flip.</p>`;
   const fmt = (r, [l, k, dec]) => { let v = r[k]; if (S.pg && C.perGame.includes(k)) { v = v / r.gp; dec = 1; } return dec ? v.toFixed(dec) : String(Math.round(v)); };
   const filt = () => rows.filter(r => (!S.pos || r.pos === S.pos) && (!S.team || r.team?.id === S.team) && (!S.rookies || r.rookie) && (!S.qual || C.qual(r, wk)) && (!S.q || (r.name + ' ' + (r.team?.abbreviation || '')).toLowerCase().includes(S.q)));
   const val = (r, k) => S.pg && C.perGame.includes(k) ? r[k] / r.gp : r[k];
@@ -1110,33 +1118,8 @@ async function stats(cat, sub) {
   document.getElementById('steam').onchange = e => { S.team = e.target.value; draw(); }; document.getElementById('sq').oninput = e => { S.q = e.target.value.toLowerCase(); draw(); };
   document.getElementById('squal').onchange = e => { S.qual = e.target.checked; draw(); }; document.getElementById('spg').onchange = e => { S.pg = e.target.checked; draw(); };
   document.getElementById('smorebtn').onclick = () => { S.shown = 5000; draw(); };
-  document.getElementById('sharetop').onclick = () => { const list = filt().sort((a, b) => val(b, S.sort) - val(a, S.sort)).slice(0, 10); const col = C.cols.find(c => c[1] === S.sort); shareCard({ title: `${C.name} · ${col?.[0] || S.sort} leaders`, sub: `${SEASON} NFL${S.pos ? ' · ' + S.pos : ''}${S.pg ? ' · per game' : ''}`, rows: list.map((r, i) => ({ left: `${i + 1}. ${r.name}`, mid: `${r.pos} · ${r.team?.abbreviation || ''} · ${r.gp} GP`, right: fmt(r, col || C.cols[0]), hl: i === 0 })) }); };
-  if (data.live) poll(() => stats(cat), false);
-}
-/* college: merge ESPN's leaderboards (FBS, top 50 per stat) into one table per group */
-async function statsCFB(cat) {
-  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>Loading ESPN leaderboards…</h2></div></div><div class="prog" id="lp"><i style="width:0"></i></div><div class="panel"><div class="skel"></div><div class="skel"></div></div>`;
-  const cats = (await fullLeaders(p => { const b = document.querySelector('#lp i'); if (b) b.style.width = p * 100 + '%'; })).filter(c => c.leaders?.length); const idx = await teamsIndex().catch(() => ({}));
-  const groups = LGROUPS.map(([g, names]) => [g, names.map(n => cats.find(c => c.name === n)).filter(Boolean)]).filter(x => x[1].length);
-  const grp = groups.find(x => x[0].toLowerCase() === String(cat || '').toLowerCase()) || groups[0]; const key = grp[0].toLowerCase();
-  const expanded = await Promise.all(grp[1].map(c => c.expandable && !c.expanded ? expandCategory(c).catch(() => c) : c));
-  const rows = {}; expanded.forEach((c, ci) => c.leaders.forEach(l => { const r = (rows[l.athlete.id] ||= { id: l.athlete.id, name: l.athlete.displayName, pos: l.athlete.position?.abbreviation || '', team: idx[l.team?.id] || l.team, hs: hsOf(l.athlete), v: {} }); r.v[c.name] = { n: l.value, d: l.displayValue }; }));
-  const list = Object.values(rows); const main = expanded[0].name; const positions = [...new Set(list.map(r => r.pos).filter(Boolean))].sort(); const confs = [...new Set(list.map(r => r.team?.confName || r.team?.conf).filter(Boolean))].sort((a, b) => confOrder({ name: a }, { name: b }));
-  const S = { sort: main, dir: -1, pos: '', conf: '', q: '' };
-  view.innerHTML = `<div class="bar"><div><h1>Player stats</h1><h2>${SEASON} FBS · ESPN's top 50 in each ${grp[0].toLowerCase()} stat, merged</h2></div><div class="row"><a class="chip" href="#records">Records watch</a><button class="chip" id="sharetop">Share top 10</button></div></div>
-    <div class="lgroups">${groups.map(([g]) => `<a class="${g === grp[0] ? 'on' : ''}" href="#stats/${g.toLowerCase()}">${g}</a>`).join('')}</div>
-    <div class="panel"><div class="lfilters"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Pos</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}<select id="sconf" aria-label="Conference" style="margin-left:auto"><option value="">All conferences</option>${confs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select><input id="sq" placeholder="Find a player" style="padding:5px 8px;font-size:13px;width:150px"></div>
-      <div class="tw"><table id="st" class="stats"><thead><tr><th>#</th><th>Player</th>${expanded.map(c => `<th class="num sort" data-k="${esc(c.name)}" title="${esc(c.displayName)}">${esc(c.abbreviation || c.displayName)}</th>`).join('')}</tr></thead><tbody></tbody></table></div></div>
-    <p class="note">ESPN publishes a top 50 per stat for college football rather than full totals, so a blank cell means the player is outside the top 50 in that stat. Click a column to sort.</p>`;
-  const filt = () => list.filter(r => (!S.pos || r.pos === S.pos) && (!S.conf || (r.team?.confName || r.team?.conf) === S.conf) && (!S.q || (r.name + ' ' + (r.team?.abbreviation || '')).toLowerCase().includes(S.q)));
-  const draw = () => { const l = filt().sort((a, b) => ((b.v[S.sort]?.n ?? -1e9) - (a.v[S.sort]?.n ?? -1e9)) * -S.dir);
-    document.getElementById('st').querySelector('tbody').innerHTML = l.slice(0, 200).map((r, i) => `<tr class="clk ${isFav(r.team?.id) ? 'fav' : ''}" data-p="${esc(r.id)}"><td class="num muted">${i + 1}</td><td class="tm"><img src="${esc(r.hs)}" alt="" style="border-radius:50%" loading="lazy" onerror="this.style.visibility='hidden'"><div class="sp"><b>${esc(r.name)}</b><small>${esc(r.pos)} · <img src="${esc(logo(r.team))}" alt="">${esc(r.team?.abbreviation || '')}</small></div></td>${expanded.map(c => `<td class="num ${c.name === S.sort ? 'sorted' : ''}">${r.v[c.name] ? esc(r.v[c.name].d) : '<span class="muted">–</span>'}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${expanded.length + 2}" class="empty">No players match.</td></tr>`;
-    document.querySelectorAll('#st th[data-k]').forEach(th => th.classList.toggle('sorted', th.dataset.k === S.sort)); wire(); };
-  draw();
-  view.querySelectorAll('#st th[data-k]').forEach(th => th.onclick = () => { if (S.sort === th.dataset.k) S.dir = -S.dir; else { S.sort = th.dataset.k; S.dir = -1; } draw(); });
-  view.querySelectorAll('[data-pos]').forEach(b => b.onclick = () => { S.pos = b.dataset.pos; view.querySelectorAll('[data-pos]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
-  document.getElementById('sconf').onchange = e => { S.conf = e.target.value; draw(); }; document.getElementById('sq').oninput = e => { S.q = e.target.value.toLowerCase(); draw(); };
-  document.getElementById('sharetop').onclick = () => { const l = filt().sort((a, b) => (b.v[S.sort]?.n ?? -1e9) - (a.v[S.sort]?.n ?? -1e9)).slice(0, 10); const c = expanded.find(x => x.name === S.sort); shareCard({ title: `${c?.displayName || grp[0]} leaders`, sub: `${SEASON} FBS`, rows: l.map((r, i) => ({ left: `${i + 1}. ${r.name}`, mid: `${r.pos} · ${r.team?.abbreviation || ''}`, right: r.v[S.sort]?.d || '', hl: i === 0 })) }); };
+  document.getElementById('sharetop').onclick = () => { const list = filt().sort((a, b) => val(b, S.sort) - val(a, S.sort)).slice(0, 10); const col = C.cols.find(c => c[1] === S.sort); shareCard({ title: `${C.name} · ${col?.[0] || S.sort} leaders`, sub: `${SEASON} ${LEAGUE.name}${S.pos ? ' · ' + S.pos : ''}${S.pg ? ' · per game' : ''}`, rows: list.map((r, i) => ({ left: `${i + 1}. ${r.name}`, mid: `${r.pos} · ${r.team?.abbreviation || ''} · ${r.gp} GP`, right: fmt(r, col || C.cols[0]), hl: i === 0 })) }); };
+  if (data.live) poll(() => stats(cat, scope), false);
 }
 
 /* ---------- players (search) ---------- */
@@ -2147,7 +2130,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '13.1';
+const APP_VERSION = '13.2';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });

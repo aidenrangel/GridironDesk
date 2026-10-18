@@ -40,7 +40,7 @@ Opening `index.html` directly from disk also works in Safari/Chrome; only the in
 - **Weekly recap** (`#recap`), **Bowl projections** (`#bowls`, college), pinned mini-scorebug (📌 on any Gamecast), auto-switch to the hottest game (Settings / RedZone), haptics, key-moment markers on the win-probability chart, "if scores hold" seed changes on the live scoreboard, share cards (PNG), keyboard shortcuts (←/→ week, 1–9 open a game, R RedZone), stale scoreboard fallback, settings export/import.
 
 ## Player stats (v13)
-- **Stats** replaces Leaders. NFL: full season tables (passing, rushing, receiving, defense, kicking, punting, returns) summed from every game's box score — every player, sortable columns, position/team/rookie filters, qualified toggle, per-game toggle, live games included. College: ESPN's top-50 leaderboards merged into one table per group with a conference filter.
+- **Stats** replaces Leaders. NFL: full season tables (passing, rushing, receiving, defense, kicking, punting, returns) summed from every game's box score — every player, sortable columns, position/team/rookie filters, qualified toggle, per-game toggle, live games included. College: same tables from box scores, scoped to Top 25 games, Power 4, one conference, or all of FBS (slow first load).
 
 ## Notes
 - Favorite teams, theme, season, fantasy format and the roster cache live in your browser's localStorage.
