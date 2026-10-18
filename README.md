@@ -27,6 +27,13 @@ Opening `index.html` directly from disk also works in Safari/Chrome; only the in
 - **Split screen** (`#multi/ID,ID,...`): up to four games side by side; add `/theater` to hide the chrome. Reachable from any Gamecast or from RedZone.
 - **Player cards**: click any name in the play feed, top performers or box score for the player's live line and fantasy points.
 
+## Season tools (v11)
+- **Team dashboard** tab: record splits, scoring by quarter, point differential, PF/PA by week. **Moves** tab shows the team's transactions.
+- **All-time series**: every meeting since 2000 (button on Gamecast, team pages and Compare; built from ESPN's season schedules, cached for six hours).
+- **Player trends & usage**: pick any stat (or fantasy points) for a by-week chart with a 3-game average and season high; RB/WR/TE profiles get target and carry share per game.
+- **Draft classes**: Players page filter; Leaders has a Rookies chip.
+- **Schedule strength** (`#sos`), **Division race** (`#race`, NFL), **Awards** (`#awards`), **Records watch** (`#records`), **Transactions** (`#transactions`, NFL), **CFP odds** (`#odds` in college mode).
+
 ## Notes
 - Favorite teams, theme, season, fantasy format and the roster cache live in your browser's localStorage.
 - Playoff odds, the power index and fantasy points are computed in the page; they are not ESPN's numbers.
