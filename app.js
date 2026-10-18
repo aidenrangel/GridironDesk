@@ -135,6 +135,9 @@ async function teamRoster(id) {
 /* ESPN ranks every stat high-to-low; for these, lower is better, so the rank is flipped (1 = fewest). */
 const LOWER_BETTER = new Set(['passing.sacks','passing.interceptions','miscellaneous.totalGiveaways','general.totalPenaltyYards','general.totalPenalties','defensive.pointsAllowedPerGame','miscellaneous.thirdDownConvPctAllowed','general.fumblesLost','general.fumbles']);
 const NTEAMS = () => LEAGUE.nteams;
+/* Overall W-L-T from a standings entry. ESPN's college feed puts the conference record in wins/losses, so prefer the 'overall' summary. */
+function recOf(e) { const v = n => Number(e.stats?.find(s => s.name === n)?.value ?? NaN); const ov = String(e.stats?.find(s => s.name === 'overall')?.displayValue || ''); const m = ov.match(/^(\d+)-(\d+)(?:-(\d+))?/);
+  if (m && (isCFB() || isNaN(v('wins')))) return { w: num(m[1]), l: num(m[2]), t: num(m[3] || 0) }; return { w: v('wins') || 0, l: v('losses') || 0, t: v('ties') || 0 }; }
 async function teamStats(id) {
   try { const d = await getJSON(`${CORE}/seasons/${SEASON}/types/2/teams/${id}/statistics`, 600000); const out = {};
     (d.splits?.categories || []).forEach(c => c.stats.forEach(s => { const k = c.name + '.' + s.name; const v = LOWER_BETTER.has(k) && s.rank ? { ...s, rank: NTEAMS() + 1 - s.rank, rankDisplayValue: ord(NTEAMS() + 1 - s.rank) } : s; out[k] = v; if (!out[s.name]) out[s.name] = v; })); return out;
@@ -920,7 +923,7 @@ async function power() {
   const rows = [];
   d.children.forEach(c => c.children.forEach(div => (div.standings?.entries || []).forEach(e => {
     const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0);
-    const w = v('wins'), l = v('losses'), t = v('ties'), g = w + l + t, pf = v('pointsFor'), pa = v('pointsAgainst');
+    const { w, l, t } = recOf(e); const g = w + l + t, pf = v('pointsFor'), pa = v('pointsAgainst');
     const pyth = (pf || pa) ? Math.pow(pf, 2.37) / (Math.pow(pf, 2.37) + Math.pow(pa, 2.37)) : 0.5;
     const pct = g ? (w + t / 2) / g : 0;
     rows.push({ team: e.team, conf: c.abbreviation || c.name, w, l, t, g, pf, pa, diff: pf - pa, mov: g ? (pf - pa) / g : 0, pyth, pct, luck: pct - pyth, pythW: pyth * g, streak: e.stats.find(s => s.name === 'streak')?.displayValue || '' });
@@ -1305,7 +1308,7 @@ async function news() {
 /* shared rating model: team table, ratings, played/remaining games, win probability */
 async function buildModel() {
   const [stnd, gamesAll] = await Promise.all([standingsL3(), seasonGames()]); const games = gamesAll.filter(ev => !ev._post);
-  const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => (div.standings?.entries || []).forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: v('wins'), l: v('losses'), t: v('ties'), pf: v('pointsFor'), pa: v('pointsAgainst') }; })));
+  const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => (div.standings?.entries || []).forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); const r = recOf(e); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: r.w, l: r.l, t: r.t, pf: v('pointsFor'), pa: v('pointsAgainst') }; })));
   const ids = Object.keys(T); if (!ids.length) throw new Error('Standings unavailable.');
   ids.forEach(id => { const r = T[id], g = r.w + r.l + r.t; const pyth = (r.pf || r.pa) ? Math.pow(r.pf, 2.37) / (Math.pow(r.pf, 2.37) + Math.pow(r.pa, 2.37)) : .5; r.rating = (g ? (r.pf - r.pa) / g : 0) * 0.6 + (pyth - .5) * 24; r.played = g; });
   const played = [], remaining = [];
@@ -1378,7 +1381,7 @@ function teamDashHTML(id, games, played, stnd, idx) {
   const qHTML = ['Q1', 'Q2', 'Q3', 'Q4', 'OT'].map((l, i) => (i < 4 || Q[i] || QO[i]) ? `<div class="qrow"><span class="ql">${l}</span><div class="qb"><i class="a" style="width:${Q[i] / qmax * 100}%"></i><b>${Q[i]}</b></div><div class="qb"><i class="b" style="width:${QO[i] / qmax * 100}%"></i><b>${QO[i]}</b></div></div>` : '').join('');
   // opponent context from current standings
   const info = {}; const my = idx?.[id] || {};
-  if (stnd) stnd.children.forEach(c => c.children.forEach(d => (d.standings?.entries || []).forEach(e => { const w = Number(e.stats.find(s => s.name === 'wins')?.value ?? NaN), l = Number(e.stats.find(s => s.name === 'losses')?.value ?? NaN); const ov = String(e.stats.find(s => s.name === 'overall')?.displayValue || ''); const m = ov.match(/^(\d+)-(\d+)/); const W = isNaN(w) ? num(m?.[1]) : w, L = isNaN(l) ? num(m?.[2]) : l; info[e.team.id] = { conf: c.abbreviation || c.name, div: d.name, pct: W + L ? W / (W + L) : .5 }; })));
+  if (stnd) stnd.children.forEach(c => c.children.forEach(d => (d.standings?.entries || []).forEach(e => { const { w: W, l: L } = recOf(e); info[e.team.id] = { conf: c.abbreviation || c.name, div: d.name, pct: W + L ? W / (W + L) : .5 }; })));
   const me = info[id] || {};
   const half = g => { const { me, op } = ls(g); return [me[0] + me[1], op[0] + op[1]]; };
   const prevRes = {}; played.forEach((g, i) => prevRes[g.ev.id] = i ? played[i - 1].res : '');
@@ -1592,7 +1595,7 @@ const RECORDS = {
 async function records() {
   view.innerHTML = `<div class="bar"><div><h1>Records watch</h1><h2>Loading leaders…</h2></div></div><div class="prog" id="lp"><i style="width:0"></i></div>`;
   const [cats, idx] = await Promise.all([fullLeaders(p => { const b = document.querySelector('#lp i'); if (b) b.style.width = p * 100 + '%'; }), teamsIndex()]);
-  const gpOf = tid => { const st = idx[tid]?.stats; if (!st) return null; const w = Number(st.find(s => s.name === 'wins')?.value ?? NaN), l = Number(st.find(s => s.name === 'losses')?.value ?? NaN), t = Number(st.find(s => s.name === 'ties')?.value ?? 0); if (!isNaN(w) && !isNaN(l)) return w + l + t; const m = String(st.find(s => s.name === 'overall')?.displayValue || '').match(/^(\d+)-(\d+)/); return m ? num(m[1]) + num(m[2]) : null; };
+  const gpOf = tid => { const st = idx[tid]?.stats; if (!st) return null; const r = recOf({ stats: st }); return r.w + r.l + r.t || null; };
   const total = TOTAL_GAMES(); const defs = RECORDS[LEAGUE.key] || RECORDS.nfl; const calF = await seasonCalendar().catch(() => null);
   const blocks = defs.map(([name, rec, who, ms]) => { const c = cats.find(x => x.name === name); if (!c?.leaders?.length) return '';
     const rows = c.leaders.slice(0, 40).map(l => { const gp = gpOf(l.team?.id) || Math.max(1, calF?.cur ? calF.cur - 1 : 1); const pace = l.value / gp * total; return { l, gp, pace, pct: pace / rec, t: idx[l.team?.id] || l.team }; }).sort((a, b) => b.pace - a.pace).slice(0, 6);
@@ -1814,7 +1817,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '11.0';
+const APP_VERSION = '11.1';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
