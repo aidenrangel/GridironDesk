@@ -1451,29 +1451,31 @@ function teamDashHTML(id, games, played, stnd, idx) {
 }
 
 /* ---------- 10 · head-to-head history (every meeting since 2000, from ESPN's schedule feeds) ---------- */
-async function h2hHistory(aId, bId, onProgress) {
-  const key = LK(`h2h:${[String(aId), String(bId)].sort().join('-')}`); const c = store.get(key, null); if (c && Date.now() - c.t < 6 * 3600000) return c.games;
-  const years = []; for (let y = 2000; y <= CUR_SEASON; y++) years.push(y);
+const H2H_FROM = () => isCFB() ? 2002 : 1970;
+async function h2hHistory(aId, bId, onProgress, from = 2000) {
+  const key = LK(`h2h:${[String(aId), String(bId)].sort().join('-')}:${from}`); const c = store.get(key, null); if (c && Date.now() - c.t < 6 * 3600000) return c.games;
+  const years = []; for (let y = from; y <= CUR_SEASON; y++) years.push(y);
   const games = []; let done = 0;
   const grab = async (y, type) => { try { const d = await getJSON(`${API}/teams/${aId}/schedule?season=${y}${type === 3 ? '&seasontype=3' : ''}`, 86400000);
       (d.events || []).forEach(ev => { const c = ev.competitions?.[0]; if (!c?.competitors?.some(x => x.team.id === String(bId)) || !c.status?.type?.completed) return; const [a, h] = byHome(c);
         games.push({ id: ev.id, y, wk: ev.week?.number, post: type === 3 || ev.seasonType?.type === 3, date: ev.date, home: h.team.id, hs: scoreOf(h), as: scoreOf(a), hn: h.team.abbreviation, an: a.team.abbreviation, label: ev.week?.text || '' }); }); } catch {} done++; onProgress?.(done / (years.length * 2)); };
   for (let i = 0; i < years.length; i += 9) await Promise.all(years.slice(i, i + 9).flatMap(y => [grab(y, 2), grab(y, 3)]));
+  if (from < 2000) { const prev = store.get(LK(`h2h:${[String(aId), String(bId)].sort().join('-')}:2000`), null); if (prev?.games) games.push(...prev.games); }
   const seen = new Set(); const uniq = games.filter(g => !seen.has(g.id) && seen.add(g.id)).sort((x, y) => new Date(y.date) - new Date(x.date));
   store.set(key, { t: Date.now(), games: uniq }); return uniq;
 }
-function h2hHTML(games, A, B, limit = 10) {
-  if (!games.length) return '<div class="empty">No meetings since 2000.</div>';
+function h2hHTML(games, A, B, limit = 10, from = 2000) {
+  if (!games.length) return `<div class="empty">No meetings since ${from}.</div>`;
   const wins = { [A.id]: 0, [B.id]: 0 }; let ties = 0; games.forEach(g => { if (g.hs === g.as) ties++; else wins[g.hs > g.as ? g.home : (g.home === String(A.id) ? String(B.id) : String(A.id))]++; });
   const lead = wins[A.id] === wins[B.id] ? 'Series tied' : `${wins[A.id] > wins[B.id] ? esc(A.abbreviation) : esc(B.abbreviation)} leads`;
   const pf = {}; games.forEach(g => { pf[g.home] = (pf[g.home] || 0) + g.hs; const away = g.home === String(A.id) ? String(B.id) : String(A.id); pf[away] = (pf[away] || 0) + g.as; });
   const streak = (() => { let n = 0, who = null; for (const g of games) { const w = g.hs === g.as ? null : g.hs > g.as ? g.home : (g.home === String(A.id) ? String(B.id) : String(A.id)); if (!w) break; if (who && w !== who) break; who = w; n++; } return who ? `${esc((who === String(A.id) ? A : B).abbreviation)} has won ${n} straight` : ''; })();
-  return `<div class="h2h-sum"><div class="h2h-side" style="--tc:${colorOf(A)}"><img src="${esc(logo(A))}" alt=""><b>${wins[A.id]}</b></div><div class="h2h-mid"><b>${lead}</b><small>${games.length} meetings since 2000${ties ? ' · ' + ties + ' tie' + (ties > 1 ? 's' : '') : ''}</small><small>Avg score ${(pf[A.id] / games.length).toFixed(1)} – ${(pf[B.id] / games.length).toFixed(1)}</small>${streak ? `<small class="pos">${streak}</small>` : ''}</div><div class="h2h-side r" style="--tc:${colorOf(B)}"><img src="${esc(logo(B))}" alt=""><b>${wins[B.id]}</b></div></div>
-    <div class="tw"><table><thead><tr><th>Season</th><th>Game</th><th>Result</th><th class="num">Score</th></tr></thead><tbody>${games.slice(0, limit).map(g => { const aHome = g.home === String(A.id); const aS = aHome ? g.hs : g.as, bS = aHome ? g.as : g.hs; const w = aS === bS ? 'T' : aS > bS ? 'W' : 'L'; return `<tr class="clk" data-g="${esc(g.id)}"><td class="num">${g.y}</td><td>${g.post ? '<span class="tag" style="font-size:10px">Playoffs</span> ' : ''}${esc(g.label || (g.wk ? 'Week ' + g.wk : ''))} · ${aHome ? esc(B.abbreviation) + ' @ ' + esc(A.abbreviation) : esc(A.abbreviation) + ' @ ' + esc(B.abbreviation)}</td><td><span class="res ${w}">${w}</span> <span class="muted">${esc(A.abbreviation)}</span></td><td class="num">${aS}–${bS}</td></tr>`; }).join('')}</tbody></table></div>${games.length > limit ? `<div class="empty" style="padding:8px"><button class="chip" data-h2hmore>Show all ${games.length}</button></div>` : ''}`;
+  return `<div class="h2h-sum"><div class="h2h-side" style="--tc:${colorOf(A)}"><img src="${esc(logo(A))}" alt=""><b>${wins[A.id]}</b></div><div class="h2h-mid"><b>${lead}</b><small>${games.length} meetings since ${from}${from < 2000 ? ' (ESPN has partial seasons before the mid-1990s)' : ''}${ties ? ' · ' + ties + ' tie' + (ties > 1 ? 's' : '') : ''}</small><small>Avg score ${(pf[A.id] / games.length).toFixed(1)} – ${(pf[B.id] / games.length).toFixed(1)}</small>${streak ? `<small class="pos">${streak}</small>` : ''}</div><div class="h2h-side r" style="--tc:${colorOf(B)}"><img src="${esc(logo(B))}" alt=""><b>${wins[B.id]}</b></div></div>
+    <div class="tw"><table><thead><tr><th>Season</th><th>Game</th><th>Result</th><th class="num">Score</th></tr></thead><tbody>${games.slice(0, limit).map(g => { const aHome = g.home === String(A.id); const aS = aHome ? g.hs : g.as, bS = aHome ? g.as : g.hs; const w = aS === bS ? 'T' : aS > bS ? 'W' : 'L'; return `<tr class="clk" data-g="${esc(g.id)}"><td class="num">${g.y}</td><td>${g.post ? '<span class="tag" style="font-size:10px">Playoffs</span> ' : ''}${esc(g.label || (g.wk ? 'Week ' + g.wk : ''))} · ${aHome ? esc(B.abbreviation) + ' @ ' + esc(A.abbreviation) : esc(A.abbreviation) + ' @ ' + esc(B.abbreviation)}</td><td><span class="res ${w}">${w}</span> <span class="muted">${esc(A.abbreviation)}</span></td><td class="num">${aS}–${bS}</td></tr>`; }).join('')}</tbody></table></div><div class="empty" style="padding:8px">${games.length > limit ? `<button class="chip" data-h2hmore>Show all ${games.length}</button> ` : ''}${from >= 2000 && H2H_FROM() < 2000 ? `<button class="chip" data-h2hold>Go back to ${H2H_FROM()} →</button>` : ''}</div>`;
 }
-function mountH2H(el, A, B) {
-  if (!el) return; el.innerHTML = `<div class="panel"><h3>All-time series<span class="pill">since 2000</span></h3><div class="prog" style="margin:10px 16px"><i id="h2hp" style="width:0"></i></div></div>`;
-  h2hHistory(A.id, B.id, p => { const b = document.getElementById('h2hp'); if (b) b.style.width = p * 100 + '%'; }).then(games => { if (!el.isConnected) return; const draw = lim => { el.innerHTML = `<div class="panel"><h3>All-time series<span class="pill">since 2000</span></h3>${h2hHTML(games, A, B, lim)}</div>`; el.querySelector('[data-h2hmore]')?.addEventListener('click', () => draw(999)); wire(); }; draw(10); }).catch(e => { el.innerHTML = `<div class="panel"><div class="empty">Series history unavailable (${esc(e.message)}).</div></div>`; });
+function mountH2H(el, A, B, from = 2000) {
+  if (!el) return; el.innerHTML = `<div class="panel"><h3>All-time series<span class="pill">since ${from}${from < 2000 ? ' · this takes a moment' : ''}</span></h3><div class="prog" style="margin:10px 16px"><i id="h2hp" style="width:0"></i></div></div>`;
+  h2hHistory(A.id, B.id, p => { const b = document.getElementById('h2hp'); if (b) b.style.width = p * 100 + '%'; }, from).then(games => { if (!el.isConnected) return; const draw = lim => { el.innerHTML = `<div class="panel"><h3>All-time series<span class="pill">since ${from}</span></h3>${h2hHTML(games, A, B, lim, from)}</div>`; el.querySelector('[data-h2hmore]')?.addEventListener('click', () => draw(999)); el.querySelector('[data-h2hold]')?.addEventListener('click', () => mountH2H(el, A, B, H2H_FROM())); wire(); }; draw(10); }).catch(e => { el.innerHTML = `<div class="panel"><div class="empty">Series history unavailable (${esc(e.message)}).</div></div>`; });
 }
 
 /* ---------- 11 · player trend chart with rolling average + season high ---------- */
@@ -2087,7 +2089,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '12.3';
+const APP_VERSION = '12.4';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
