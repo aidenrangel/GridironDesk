@@ -587,3 +587,23 @@ body.theater .panel:has(#perfs),body.theater .panel:has(#tiles){display:none}
 .gear-row select.theme{padding:4px 8px}
 #share{display:flex}
 @media (max-width:760px){#share{display:flex}.gear .dd{right:0}}
+
+/* ===== v9 college football ===== */
+.lg-toggle{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:2px;flex:0 0 auto}
+.lg-toggle button{font-family:var(--display);font-size:14px;letter-spacing:.06em;padding:4px 10px;border-radius:999px;color:var(--muted);line-height:1.2}
+.lg-toggle button.on{background:var(--accent);color:var(--accent-ink)}
+.league-hide{display:none!important}
+.rkb{display:inline-block;font-family:var(--mono);font-size:11px;color:var(--muted);margin-right:5px;vertical-align:1px}
+.sb-name .rkb{font-size:13px;margin-right:4px}
+.feat .side b .rkb{font-family:var(--mono);font-size:14px;color:var(--fg);opacity:.75}
+.byes{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s2);padding:var(--s3) var(--s4)}
+.mus{display:grid;gap:var(--s2);padding:var(--s3) var(--s4)}
+.mu{display:grid;grid-template-columns:1fr auto 1fr;gap:var(--s2);align-items:center}
+.seed-card{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--r-sm);background:var(--panel-2);box-shadow:inset 3px 0 0 var(--tc);min-width:0}
+.seed-card img{width:28px;height:28px;object-fit:contain}
+.seed-card .sd{font-family:var(--display);font-weight:800;font-size:18px;color:var(--gold);width:18px}
+.seed-card>div{min-width:0}
+.seed-card b{font-family:var(--display);font-size:17px;display:block;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seed-card small{color:var(--muted);font-size:11px;font-family:var(--mono)}
+@media (max-width:640px){.byes{grid-template-columns:repeat(2,1fr)}.mu{grid-template-columns:1fr}.mu>.muted{display:none}}
+@media (max-width:760px){.lg-toggle{order:1}.lg-toggle button{font-size:12px;padding:3px 8px}}

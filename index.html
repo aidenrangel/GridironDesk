@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gridiron Desk</title>
-<meta name="description" content="NFL scores, standings, playoff odds, power index, leaders, fantasy, players, rosters, injuries and news, live from ESPN's public data feeds.">
+<meta name="description" content="NFL and college football scores, standings, playoff odds, power index, leaders, fantasy, players, rosters, injuries and news, live from ESPN's public data feeds.">
 <meta name="theme-color" content="#131a24">
 <meta property="og:title" content="Gridiron Desk">
 <meta property="og:description" content="NFL scores, standings, playoff odds, leaders, fantasy and pick'em in one place.">
@@ -19,12 +19,13 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="styles.css?v=8.2">
+<link rel="stylesheet" href="styles.css?v=9.0">
 </head>
 <body>
 <a class="skip" href="#view">Skip to content</a>
 <header><div class="hwrap">
-  <a class="brand" href="#scores"><i></i>Gridiron Desk</a>
+  <a class="brand" href="#home"><i></i>Gridiron Desk</a>
+  <div class="lg-toggle" role="group" aria-label="League"><button data-league="nfl" class="on">NFL</button><button data-league="cfb">CFB</button></div>
   <nav class="top" id="nav" aria-label="Main">
     <a href="#home" data-r="home">Home</a>
     <a href="#scores" data-r="scores">Scores</a>
@@ -60,8 +61,8 @@
   <div id="view"><div class="panel"><div class="skel"></div><div class="skel"></div></div></div>
 </main>
 <div class="toast" id="toast"></div>
-<footer>Data from ESPN's public NFL feeds. Not affiliated with ESPN or the NFL. Live pages refresh every 15 seconds by default (adjustable in Settings). Power index, playoff odds, fantasy points and win-probability swings are computed on this page, not by ESPN. <span class="num">v8.2</span></footer>
+<footer>Data from ESPN's public NFL feeds. Not affiliated with ESPN or the NFL. Live pages refresh every 15 seconds by default (adjustable in Settings). Power index, playoff odds, fantasy points and win-probability swings are computed on this page, not by ESPN. <span class="num">v9.0</span></footer>
 
-<script src="app.js?v=8.2"></script>
+<script src="app.js?v=9.0"></script>
 </body>
 </html>

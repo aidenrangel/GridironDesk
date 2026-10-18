@@ -1,5 +1,7 @@
 # Gridiron Desk
 
+NFL and college football (FBS), switchable from the header.
+
 A single-page NFL stats site built on ESPN's public JSON feeds: home page, scores with live gamecast,
 standings, playoff picture + simulated odds, power index, team stats, league leaders, fantasy scoring,
 player pages and comparison, rosters, injuries, news, seasons back to 2010.

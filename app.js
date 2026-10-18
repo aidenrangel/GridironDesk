@@ -3,11 +3,26 @@ const CUR_SEASON = 2026;
 let SEASON = Number(store0('season', CUR_SEASON));
 function store0(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } }
 const isCur = () => SEASON === CUR_SEASON;
-const API  = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl';
-const API2 = 'https://site.api.espn.com/apis/v2/sports/football/nfl';
-const API3 = 'https://site.api.espn.com/apis/site/v3/sports/football/nfl';
-const WEB  = 'https://site.web.api.espn.com/apis/common/v3/sports/football/nfl';
-const CORE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/nfl';
+/* ---------- leagues ---------- */
+const LEAGUES = {
+  nfl: { key: 'nfl', name: 'NFL', path: 'football/nfl', core: 'football/leagues/nfl', uidLeague: 28, headshots: 'nfl', logos: 'nfl', nteams: 32, teamsQ: 'limit=40', sbQ: '', stQ: '&level=3', regWeeks: 18, hasDivisions: true, playoffSpots: 7, playoffLabel: 'Playoffs',
+    post: [['1','Wild Card','WC'],['2','Divisional','DIV'],['3','Conf. Championship','CONF'],['5','Super Bowl','SB']], fantasy: true, odds: true, injuries: true },
+  cfb: { key: 'cfb', name: 'College Football', path: 'football/college-football', core: 'football/leagues/college-football', uidLeague: 23, headshots: 'college-football', logos: 'ncaa', nteams: 134, teamsQ: 'limit=200&groups=80', sbQ: '&groups=80&limit=300', stQ: '&group=80', regWeeks: 15, hasDivisions: false, playoffSpots: 12, playoffLabel: 'Rankings',
+    post: [['1','Bowls & CFP','BOWL']], fantasy: false, odds: false, injuries: false }
+};
+let LEAGUE = LEAGUES[store0('league', 'nfl')] || LEAGUES.nfl;
+let API, API2, API3, WEB, CORE;
+function applyLeagueUrls() {
+  API  = `https://site.api.espn.com/apis/site/v2/sports/${LEAGUE.path}`;
+  API2 = `https://site.api.espn.com/apis/v2/sports/${LEAGUE.path}`;
+  API3 = `https://site.api.espn.com/apis/site/v3/sports/${LEAGUE.path}`;
+  WEB  = `https://site.web.api.espn.com/apis/common/v3/sports/${LEAGUE.path}`;
+  CORE = `https://sports.core.api.espn.com/v2/sports/${LEAGUE.core}`;
+}
+applyLeagueUrls();
+const isCFB = () => LEAGUE.key === 'cfb';
+const SB_URL = () => `${API}/scoreboard${LEAGUE.sbQ ? '?' + LEAGUE.sbQ.slice(1) : ''}`;
+const LK = k => `${LEAGUE.key}:${k}`;   // league-scoped storage key
 const view = document.getElementById('view');
 const cache = new Map();
 let currentWeek = null, refreshTimer = null, teamIndex = null, rosterIndex = null, rosterLoading = null;
@@ -17,7 +32,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 };
-let favs = store.get('favTeams', null); if (!favs) { const one = store.get('favTeam', null); favs = one ? [String(one)] : []; store.set('favTeams', favs); }
+let favs = store.get(LK('favTeams'), null); if (!favs) { favs = LEAGUE.key === 'nfl' ? (store.get('favTeams', null) || []) : []; store.set(LK('favTeams'), favs); }
 const isFav = id => id != null && favs.includes(String(id));
 const favGame = ev => ev.competitions[0].competitors.some(c => isFav(c.team.id));
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -33,7 +48,8 @@ const num = v => { const m = String(v ?? '').replace(/,/g, '').match(/^-?\d+(\.\
 const ord = n => n + (['th','st','nd','rd'][(n % 100 >> 3 ^ 1 && n % 10) || 0] || 'th');
 const injTag = s => { const k = /out/i.test(s) ? 'out' : /reserve|ir\b/i.test(s) ? 'ir' : /question/i.test(s) ? 'q' : /doubt/i.test(s) ? 'd' : ''; return `<span class="tag ${k}">${esc(s)}</span>`; };
 const rankTag = r => r ? `<span class="rk ${r <= 8 ? 'top' : r >= 25 ? 'bot' : ''}">${ord(r)}</span>` : '';
-const hsOf = a => a?.headshot?.href || (a?.id ? `https://a.espncdn.com/i/headshots/nfl/players/full/${a.id}.png` : '');
+const hsOf = a => a?.headshot?.href || (a?.id ? `https://a.espncdn.com/i/headshots/${LEAGUE.headshots}/players/full/${a.id}.png` : '');
+const rankBadge = c => { const r = num(c?.curatedRank?.current); return r && r <= 25 ? `<span class="rkb">${r}</span>` : ''; };
 const scoreOf = x => num(x.score?.displayValue ?? x.score?.value ?? x.score ?? 0);
 let toastT; const toast = m => { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 1800); };
 
@@ -55,40 +71,46 @@ async function getJSON(url, ttl = 60000) {
 
 /* ESPN's /teams/* paths don't always answer cross-origin requests, so each team lookup has a fallback feed. */
 const COLORS = { 1:'a71930',2:'00338d',3:'0b162a',4:'fb4f14',5:'311d00',6:'002244',7:'fb4f14',8:'0076b6',9:'204e32',10:'0c2340',11:'002c5f',12:'e31837',13:'000000',14:'003594',15:'008e97',16:'4f2683',17:'002244',18:'d3bc8d',19:'0b2265',20:'125740',21:'004c54',22:'97233f',23:'ffb612',24:'0080c6',25:'aa0000',26:'002244',27:'d50a0a',28:'5a1414',29:'0085ca',30:'006778',33:'241773',34:'03202f' };
-const colorOf = t => '#' + (t?.color || COLORS[t?.id] || '444');
+let learnedColors = store.get(LK('teamColors'), {});
+function noteColors(events) { let changed = false; (events || []).forEach(ev => ev.competitions?.[0]?.competitors?.forEach(c => { if (c.team?.color && !learnedColors[c.team.id]) { learnedColors[c.team.id] = c.team.color; changed = true; } })); if (changed) store.set(LK('teamColors'), learnedColors); }
+const colorOf = t => '#' + (t?.color || (LEAGUE.key === 'nfl' ? COLORS[t?.id] : null) || learnedColors[t?.id] || '556');
 async function teamsIndex() {
   if (teamIndex) return teamIndex;
   const idx = {};
   const sources = [
-    async () => { const d = await getJSON(`${API2}/standings?season=${SEASON}`, 300000); (d.children || []).forEach(c => (c.standings?.entries || []).forEach(e => idx[e.team.id] = { ...e.team, color: COLORS[e.team.id], conf: c.abbreviation, stats: e.stats })); },
-    async () => { const d = await getJSON(`${API}/teams?limit=40`, 3600000); (d.sports?.[0]?.leagues?.[0]?.teams || []).forEach(x => idx[x.team.id] = x.team); },
-    async () => { const d = await getJSON(`${API}/scoreboard`, 30000); d.events.forEach(ev => ev.competitions[0].competitors.forEach(c => idx[c.team.id] = c.team)); }
+    async () => { const d = await getJSON(`${API2}/standings?season=${SEASON}${LEAGUE.stQ}`, 300000); normStandings(d).children.forEach(c => c.children.forEach(div => (div.standings?.entries || []).forEach(e => idx[e.team.id] = { ...e.team, color: LEAGUE.key === 'nfl' ? COLORS[e.team.id] : learnedColors[e.team.id], conf: c.abbreviation, confName: c.name, div: div.name, stats: e.stats }))); },
+    async () => { const d = await getJSON(`${API}/teams?${LEAGUE.teamsQ}`, 3600000); (d.sports?.[0]?.leagues?.[0]?.teams || []).forEach(x => { idx[x.team.id] = { ...(idx[x.team.id] || {}), ...x.team }; if (x.team.color) learnedColors[x.team.id] = x.team.color; }); store.set(LK('teamColors'), learnedColors); },
+    async () => { const d = await getJSON(SB_URL(), 30000); noteColors(d.events); d.events.forEach(ev => ev.competitions[0].competitors.forEach(c => { if (!idx[c.team.id]) idx[c.team.id] = c.team; })); }
   ];
   let lastErr;
-  for (const s of sources) { try { await s(); if (Object.keys(idx).length >= 30) break; } catch (e) { lastErr = e; console.warn('teams source failed', e); } }
+  for (const s of sources) { try { await s(); if (Object.keys(idx).length >= LEAGUE.nteams * 0.9 && (LEAGUE.key === 'nfl' || Object.keys(learnedColors).length > 50)) break; } catch (e) { lastErr = e; console.warn('teams source failed', e); } }
   if (!Object.keys(idx).length) throw lastErr || new Error('No team list available from any ESPN feed.');
   teamIndex = idx; return idx;
 }
-async function standingsL3() { return getJSON(`${API2}/standings?season=${SEASON}&level=3`, 300000); }
+// normalize: every conference gets a `children` list of divisions; conferences without divisions become one division named after themselves
+function normStandings(d) { return { ...d, children: (d?.children || []).map(c => ({ ...c, children: (c.children && c.children.length) ? c.children : [{ name: c.name, abbreviation: c.abbreviation, standings: c.standings }] })) }; }
+async function standingsL3() { return normStandings(await getJSON(`${API2}/standings?season=${SEASON}${LEAGUE.stQ}`, 300000)); }
+const P4 = ['SEC','Big Ten','Big 12','ACC'];
+const confOrder = (a, b) => { const ia = P4.findIndex(p => (a.name || '').includes(p) || a.abbreviation === p), ib = P4.findIndex(p => (b.name || '').includes(p) || b.abbreviation === p); if (ia >= 0 || ib >= 0) return (ia < 0 ? 9 : ia) - (ib < 0 ? 9 : ib); if (/independ/i.test(a.name) !== /independ/i.test(b.name)) return /independ/i.test(a.name) ? 1 : -1; return (a.name || '').localeCompare(b.name || ''); };
 async function teamInfo(id) {
   try { const d = await getJSON(`${API}/teams/${id}`, 300000); if (d.team) return d.team; } catch (e) { console.warn('team feed fallback', e.message); }
   const [idx, st] = await Promise.all([teamsIndex(), standingsL3().catch(() => null)]);
   const t = { ...(idx[id] || { id: String(id), displayName: 'Team ' + id }) };
-  t.color = t.color || COLORS[id] || '333';
+  t.color = t.color || (LEAGUE.key === 'nfl' ? COLORS[id] : learnedColors[id]) || '556';
   if (st) for (const conf of st.children || []) for (const div of conf.children || []) {
     const entries = div.standings?.entries || []; const i = entries.findIndex(e => e.team.id === String(id));
-    if (i >= 0) { const e = entries[i]; t.standingSummary = `${ord(i + 1)} in ${div.name}`; t.record = { items: [{ type: 'total', summary: e.stats.find(s => s.name === 'overall')?.displayValue || '', stats: e.stats }] }; }
+    if (i >= 0) { const e = entries[i]; t.standingSummary = `${ord(i + 1)} in ${div.name}`; t.conf = conf.name; t.record = { items: [{ type: 'total', summary: e.stats.find(s => s.name === 'overall')?.displayValue || '', stats: e.stats }] }; }
   }
   return t;
 }
-const POST = [['1','Wild Card','WC'],['2','Divisional','DIV'],['3','Conf. Championship','CONF'],['5','Super Bowl','SB']];
+const POST = () => LEAGUE.post;
 async function seasonCalendar() {
-  const base = isCur() ? await getJSON(`${API}/scoreboard`, 30000) : await getJSON(`${API}/scoreboard?dates=${SEASON}&seasontype=2&week=1`, 600000);
+  const base = isCur() ? await getJSON(SB_URL(), 30000) : await getJSON(`${API}/scoreboard?dates=${SEASON}&seasontype=2&week=1${LEAGUE.sbQ}`, 600000);
   const cal = base.leagues?.[0]?.calendar || [];
   const reg = (cal.find(c => c.label === 'Regular Season')?.entries || []).map(e => ({ key: String(Number(e.value)), n: Number(e.value), type: 2, label: e.label, short: 'W' + Number(e.value) }));
-  if (!reg.length) for (let i = 1; i <= 18; i++) reg.push({ key: String(i), n: i, type: 2, label: 'Week ' + i, short: 'W' + i });
+  if (!reg.length) for (let i = 1; i <= LEAGUE.regWeeks; i++) reg.push({ key: String(i), n: i, type: 2, label: 'Week ' + i, short: 'W' + i });
   const postEntries = cal.find(c => c.label === 'Postseason')?.entries || [];
-  const post = POST.map(([v, l, sh]) => { const e = postEntries.find(x => String(Number(x.value)) === v); return { key: 'p' + v, n: Number(v), type: 3, label: e?.label || l, short: sh, date: e?.startDate }; });
+  const post = POST().map(([v, l, sh]) => { const e = postEntries.find(x => String(Number(x.value)) === v); return { key: 'p' + v, n: Number(v), type: 3, label: e?.label || l, short: sh, date: e?.startDate }; });
   // only list playoff rounds that have started (current season) or all of them (past seasons)
   const now = Date.now();
   return { reg, post: post.filter(x => !isCur() || !x.date || new Date(x.date) - now < 7 * 86400000), cur: isCur() ? (base.week?.number || 1) : null };
@@ -96,7 +118,7 @@ async function seasonCalendar() {
 async function seasonGames(includePost = true) {
   const cal = await seasonCalendar();
   const want = [...cal.reg, ...(includePost ? cal.post : [])];
-  const weeks = await Promise.all(want.map(w => getJSON(`${API}/scoreboard?seasontype=${w.type}&week=${w.n}&dates=${SEASON}`, w.type === 2 && isCur() ? 120000 : 600000).then(d => (d.events || []).map(ev => ({ ...ev, _post: w.type === 3, _wk: w }))).catch(() => [])));
+  const weeks = await Promise.all(want.map(w => getJSON(`${API}/scoreboard?seasontype=${w.type}&week=${w.n}&dates=${SEASON}${LEAGUE.sbQ}`, w.type === 2 && isCur() ? 120000 : 600000).then(d => (d.events || []).map(ev => ({ ...ev, _post: w.type === 3, _wk: w }))).catch(() => [])));
   return weeks.flat();
 }
 async function teamSchedule(id) {
@@ -111,10 +133,10 @@ async function teamRoster(id) {
 }
 /* ESPN ranks every stat high-to-low; for these, lower is better, so the rank is flipped (1 = fewest). */
 const LOWER_BETTER = new Set(['passing.sacks','passing.interceptions','miscellaneous.totalGiveaways','general.totalPenaltyYards','general.totalPenalties','defensive.pointsAllowedPerGame','miscellaneous.thirdDownConvPctAllowed','general.fumblesLost','general.fumbles']);
-const NTEAMS = 32;
+const NTEAMS = () => LEAGUE.nteams;
 async function teamStats(id) {
   try { const d = await getJSON(`${CORE}/seasons/${SEASON}/types/2/teams/${id}/statistics`, 600000); const out = {};
-    (d.splits?.categories || []).forEach(c => c.stats.forEach(s => { const k = c.name + '.' + s.name; const v = LOWER_BETTER.has(k) && s.rank ? { ...s, rank: NTEAMS + 1 - s.rank, rankDisplayValue: ord(NTEAMS + 1 - s.rank) } : s; out[k] = v; if (!out[s.name]) out[s.name] = v; })); return out;
+    (d.splits?.categories || []).forEach(c => c.stats.forEach(s => { const k = c.name + '.' + s.name; const v = LOWER_BETTER.has(k) && s.rank ? { ...s, rank: NTEAMS() + 1 - s.rank, rankDisplayValue: ord(NTEAMS() + 1 - s.rank) } : s; out[k] = v; if (!out[s.name]) out[s.name] = v; })); return out;
   } catch (e) { console.warn('team stats unavailable', e.message); return null; }
 }
 async function allRosters(onProgress) {
@@ -122,7 +144,7 @@ async function allRosters(onProgress) {
   if (rosterLoading) return rosterLoading;
   rosterLoading = (async () => {
     const idx = await teamsIndex();
-    const cached = store.get('rosters:' + SEASON, null);
+    const cached = store.get(LK('rosters:' + SEASON), null);
     if (cached && Date.now() - cached.t < 86400000 && cached.list?.length > 1000) { rosterIndex = cached.list.map(p => ({ ...p, team: idx[p.tid] || { id: p.tid, abbreviation: '', displayName: '' } })); onProgress?.(1); return rosterIndex; }
     const ids = Object.keys(idx); const out = []; let done = 0;
     await Promise.all(ids.map(async id => {
@@ -131,7 +153,7 @@ async function allRosters(onProgress) {
       } catch {} done++; onProgress?.(done / ids.length);
     }));
     rosterIndex = out;
-    store.set('rosters:' + SEASON, { t: Date.now(), list: out.map(p => ({ id: p.id, name: p.name, pos: p.pos, jersey: p.jersey, hs: p.hs, tid: p.team.id, inj: p.inj })) });
+    store.set(LK('rosters:' + SEASON), { t: Date.now(), list: out.map(p => ({ id: p.id, name: p.name, pos: p.pos, jersey: p.jersey, hs: p.hs, tid: p.team.id, inj: p.inj })) });
     return out;
   })();
   return rosterLoading;
@@ -144,6 +166,7 @@ async function fullLeaders(onProgress) {
   if (leadersLoading) return leadersLoading;
   leadersLoading = (async () => {
     const site = getJSON(`${API3}/leaders?season=${SEASON}`, 300000).catch(() => null);
+    if (isCFB()) { const siteD = await site; leadersFull = (siteD?.leaders?.categories || []).map(c => ({ ...c, expandable: true })); return leadersFull; }
     let core = null;
     try { core = await getJSON(`${CORE}/seasons/${SEASON}/types/2/leaders?limit=100`, 300000); } catch (e) { console.warn('core leaders unavailable', e.message); }
     const siteD = await site;
@@ -216,6 +239,21 @@ const root = document.documentElement;
 const ssel = document.getElementById('seasonSel');
 if (ssel) { ssel.innerHTML = Array.from({ length: CUR_SEASON - 2009 }, (_, i) => CUR_SEASON - i).map(y => `<option value="${y}" ${y === SEASON ? 'selected' : ''}>${y}</option>`).join('');
   ssel.onchange = e => setSeason(Number(e.target.value)); }
+function setLeague(key) {
+  if (!LEAGUES[key] || LEAGUES[key] === LEAGUE) return;
+  LEAGUE = LEAGUES[key]; applyLeagueUrls(); store.set('league', key);
+  cache.clear(); teamIndex = null; rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; liveCache = { t: 0, data: null }; GC.id = null;
+  learnedColors = store.get(LK('teamColors'), {}); favs = store.get(LK('favTeams'), []);
+  applyLeagueUI(); toast('Switched to ' + LEAGUE.name); ticker(); location.hash = '#home'; route();
+}
+function applyLeagueUI() {
+  document.querySelectorAll('[data-league]').forEach(b => b.classList.toggle('on', b.dataset.league === LEAGUE.key));
+  document.querySelectorAll('a[data-r="playoffs"]').forEach(a => { if (!a.querySelector('svg')) a.textContent = LEAGUE.playoffLabel; });
+  document.querySelectorAll('a[data-r="fantasy"], a[data-r="odds"], a[data-r="injuries"]').forEach(a => a.classList.toggle('league-hide', (a.dataset.r === 'fantasy' && !LEAGUE.fantasy) || (a.dataset.r === 'odds' && !LEAGUE.odds) || (a.dataset.r === 'injuries' && !LEAGUE.injuries)));
+  document.documentElement.dataset.league = LEAGUE.key;
+}
+document.querySelectorAll('[data-league]').forEach(b => b.onclick = () => setLeague(b.dataset.league));
+applyLeagueUI();
 function setSeason(y) { SEASON = y; store.set('season', y); cache.clear(); teamIndex = null; rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; if (ssel) ssel.value = y; const b = document.getElementById('seasonBanner'); if (b) b.hidden = isCur(); toast((isCur() ? 'Back to the current season' : 'Viewing the ' + y + ' season')); ticker(); route(); }
 document.getElementById('seasonBanner')?.querySelector('a')?.addEventListener('click', e => { e.preventDefault(); setSeason(CUR_SEASON); });
 if (document.getElementById('seasonBanner')) document.getElementById('seasonBanner').hidden = isCur();
@@ -247,7 +285,7 @@ gs.onkeydown = e => { const as = gsdd.querySelectorAll('a'); if (e.key === 'Arro
 document.addEventListener('click', e => { if (!e.target.closest('.gear')) document.getElementById('gearMenu')?.removeAttribute('open'); if (!e.target.closest('.moremenu')) document.querySelector('.moremenu')?.removeAttribute('open'); if (!e.target.closest('.search')) gsdd.hidden = true; if (e.target.closest('#gsdd a')) { gsdd.hidden = true; gs.value = ''; } });
 document.getElementById('moreBtn').onclick = e => { e.preventDefault(); const old = document.querySelector('.more'); if (old) { old.remove(); return; }
   const wrap = document.createElement('div'); wrap.className = 'more'; 
-  wrap.innerHTML = `<div class="dd"><a href="#" id="mshare">Share this page</a>${[['redzone','RedZone'],['playoffs','Playoffs'],['odds','Playoff odds'],['power','Power index'],['teamstats','Team stats'],['players','Players'],['compare','Compare'],['fantasy','Fantasy'],['injuries','Injuries'],['news','News'],['settings','Settings']].map(([r, l]) => `<a href="#${r}">${l}</a>`).join('')}</div>`;
+  wrap.innerHTML = `<div class="dd"><a href="#" id="mshare">Share this page</a>${[['redzone','RedZone'],['playoffs',LEAGUE.playoffLabel],['odds','Playoff odds'],['power','Power index'],['teamstats','Team stats'],['players','Players'],['compare','Compare'],['fantasy','Fantasy'],['injuries','Injuries'],['news','News'],['settings','Settings']].filter(([r]) => !((r === 'fantasy' && !LEAGUE.fantasy) || (r === 'odds' && !LEAGUE.odds) || (r === 'injuries' && !LEAGUE.injuries))).map(([r, l]) => `<a href="#${r}">${l}</a>`).join('')}</div>`;
   document.body.appendChild(wrap); wrap.onclick = () => wrap.remove(); wrap.querySelector('#mshare').onclick = ev => { ev.preventDefault(); document.getElementById('share').click(); }; };
 
 /* ---------- routing ---------- */
@@ -275,9 +313,10 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && po
 /* ---------- ticker ---------- */
 async function ticker() {
   try {
-    const sb = await getJSON(`${API}/scoreboard`, 30000);
-    currentWeek = sb.week?.number || currentWeek; if (isCur()) watchLive(sb.events);
-    document.getElementById('ticker').innerHTML = sb.events.map(ev => {
+    const sb = await getJSON(SB_URL(), 30000);
+    currentWeek = sb.week?.number || currentWeek; if (isCur()) watchLive(sb.events); noteColors(sb.events);
+    const tEvents = isCFB() ? sb.events.filter(ev => ev.status.type.state === 'in' || favGame(ev) || ev.competitions[0].competitors.some(c => num(c.curatedRank?.current) <= 25)).slice(0, 40) : sb.events;
+    document.getElementById('ticker').innerHTML = tEvents.map(ev => {
       const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c);
       const live = st.state === 'in';
       const sit = c.situation || {}; const poss = t => live && sit.possession === t.id ? '<i class="tposs"></i>' : '';
@@ -313,14 +352,21 @@ function notify(title, body) { toast(body); if (store.get('notify', false) && 'N
 
 async function scores(week) {
   const cal = await seasonCalendar(); const allW = [...cal.reg, ...cal.post];
-  const base = isCur() ? await getJSON(`${API}/scoreboard`, 30000) : null;
+  const base = isCur() ? await getJSON(SB_URL(), 30000) : null;
   // current season: ESPN's live week (may be a playoff round); past seasons: the Super Bowl
   const liveKey = base ? (base.season?.type === 3 ? 'p' + base.week?.number : String(base.week?.number || 1)) : (cal.post[cal.post.length - 1]?.key || '18');
   const key = allW.some(x => x.key === String(week)) ? String(week) : liveKey;
   const wobj = allW.find(x => x.key === key) || allW[0]; const wi = allW.indexOf(wobj);
-  const sb = (base && key === liveKey) ? base : await getJSON(`${API}/scoreboard?seasontype=${wobj.type}&week=${wobj.n}&dates=${SEASON}`, isCur() ? 30000 : 600000);
-  if (isCur()) watchScores(sb.events);
-  const events = [...sb.events].sort((x, y) => (favGame(y) ? 1 : 0) - (favGame(x) ? 1 : 0));
+  const sb = (base && key === liveKey) ? base : await getJSON(`${API}/scoreboard?seasontype=${wobj.type}&week=${wobj.n}&dates=${SEASON}${LEAGUE.sbQ}`, isCur() ? 30000 : 600000);
+  if (isCur()) watchScores(sb.events); noteColors(sb.events);
+  // college: filter chips (Top 25 / conference / my teams)
+  const sbFilter = store.get(LK('sbFilter'), isCFB() ? 'top25' : 'all');
+  const rankOf = c => num(c.curatedRank?.current) || 99;
+  const confsIn = isCFB() ? [...new Set(sb.events.flatMap(ev => ev.competitions[0].competitors.map(c => c.team.conferenceId).filter(Boolean)))] : [];
+  const idxC = isCFB() ? await teamsIndex().catch(() => ({})) : {};
+  const confName = cid => { const t = Object.values(idxC).find(t => t.conferenceId === cid || t.groups?.id === cid); return t?.confName || t?.conf || ('Conf ' + cid); };
+  const passes = ev => { const cs = ev.competitions[0].competitors; if (!isCFB() || sbFilter === 'all') return true; if (sbFilter === 'top25') return cs.some(c => rankOf(c) <= 25) || favGame(ev) || ev.status.type.state === 'in' && cs.some(c => rankOf(c) <= 25); if (sbFilter === 'mine') return favGame(ev); return cs.some(c => c.team.conferenceId === sbFilter); };
+  const events = [...sb.events].filter(passes).sort((x, y) => (favGame(y) ? 1 : 0) - (favGame(x) ? 1 : 0));
   const live = sb.events.filter(e => e.status.type.state === 'in');
   const featured = sb.events.find(favGame) || [...live].sort((x, y) => { const d = e => Math.abs(num(e.competitions[0].competitors[0].score) - num(e.competitions[0].competitors[1].score)); return d(x) - d(y); })[0] || sb.events.find(e => e.status.type.state === 'pre') || sb.events[0];
   const byDay = {};
@@ -336,8 +382,11 @@ async function scores(week) {
       </div></div>
     ${myTeamsStrip(sb.events)}
     ${featured ? featuredCard(featured) : ''}
-    ${sb.events.length ? '' : '<div class="panel"><div class="empty">No games scheduled this week.</div></div>'}
+    ${isCFB() ? `<div class="chips" style="margin-bottom:var(--s4)"><button class="chip ${sbFilter === 'top25' ? 'on' : ''}" data-sbf="top25">Top 25</button><button class="chip ${sbFilter === 'all' ? 'on' : ''}" data-sbf="all">All FBS (${sb.events.length})</button>${favs.length ? `<button class="chip ${sbFilter === 'mine' ? 'on' : ''}" data-sbf="mine">My teams</button>` : ''}<select id="sbconf" aria-label="Conference" style="padding:6px 10px"><option value="">Conference…</option>${confsIn.map(cid => `<option value="${esc(cid)}" ${sbFilter === cid ? 'selected' : ''}>${esc(confName(cid))}</option>`).join('')}</select><span class="muted" style="font-size:12px">${events.length} shown</span></div>` : ''}
+    ${events.length ? '' : '<div class="panel"><div class="empty">No games match this filter.</div></div>'}
     <div class="stack">${Object.entries(byDay).map(([d, evs]) => `<div class="panel"><h3>${esc(d)}<span class="muted" style="font-size:12px;letter-spacing:0;text-transform:none">${evs.length} game${evs.length > 1 ? 's' : ''}</span></h3>${evs.map(gameCard).join('')}</div>`).join('')}</div>`;
+  view.querySelectorAll('[data-sbf]').forEach(b => b.onclick = () => { store.set(LK('sbFilter'), b.dataset.sbf); scores(key); });
+  const sbc = document.getElementById('sbconf'); if (sbc) sbc.onchange = e => { if (e.target.value) { store.set(LK('sbFilter'), e.target.value); scores(key); } };
   document.getElementById('wk').onchange = e => location.hash = `scores/${e.target.value}`;
   document.getElementById('prevw').onclick = () => location.hash = `scores/${allW[wi - 1].key}`;
   document.getElementById('nextw').onclick = () => location.hash = `scores/${allW[wi + 1].key}`;
@@ -346,7 +395,7 @@ async function scores(week) {
 function featuredCard(ev) {
   const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c); const live = st.state === 'in', pre = st.state === 'pre';
   const odds = c.odds?.[0]; const bc = c.broadcasts?.[0]?.names?.join('/') || '';
-  const side = (t, r) => `<div class="side ${r ? 'r' : ''}"><img src="${esc(t.team.logo)}" alt=""><div><b>${esc(t.team.displayName)}</b><small>${esc(t.records?.[0]?.summary || '')}${live && c.situation?.possession === t.id ? ' · 🏈' : ''}</small></div></div>`;
+  const side = (t, r) => `<div class="side ${r ? 'r' : ''}"><img src="${esc(t.team.logo)}" alt=""><div><b>${rankBadge(t)}${esc(t.team.displayName)}</b><small>${esc(t.records?.[0]?.summary || '')}${live && c.situation?.possession === t.id ? ' · 🏈' : ''}</small></div></div>`;
   return `<a class="feat" href="#game/${ev.id}" style="--ca:${colorOf(a.team)};--cb:${colorOf(h.team)}">${side(a)}<div class="mid">${pre ? '<span style="font-size:22px">' + esc(fmtShort(ev.date)) + '</span>' : esc(a.score) + ' – ' + esc(h.score)}<small class="${live ? 'live' : ''}">${live ? '<span class="dot"></span>' : ''}${esc(pre ? (odds?.details || 'Upcoming') : st.shortDetail)}${live && c.situation?.downDistanceText ? ' · ' + esc(c.situation.downDistanceText) : ''}</small></div>${side(h, true)}
     <div class="sub"><span>${pre ? 'Next up' : live ? 'Live now' : 'Final'}${c.venue?.fullName ? ' · ' + esc(c.venue.fullName) : ''}</span><span>${esc(bc)}${pre && odds?.overUnder ? ' · O/U ' + esc(odds.overUnder) : ''}</span></div></a>`;
 }
@@ -354,7 +403,7 @@ function gameCard(ev) {
   const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c);
   const done = st.completed, live = st.state === 'in', pre = st.state === 'pre';
   const possId = c.situation?.possession;
-  const row = t => `<div class="team ${done ? (t.winner ? 'w' : 'l') : ''}"><img src="${esc(t.team.logo)}" alt=""><b>${esc(t.team.displayName)}</b><small>${esc(t.records?.[0]?.summary || '')}</small>${live && possId === t.id ? '<span class="poss" title="Possession"></span>' : ''}</div>
+  const row = t => `<div class="team ${done ? (t.winner ? 'w' : 'l') : ''}"><img src="${esc(t.team.logo)}" alt="">${rankBadge(t)}<b>${esc(t.team.displayName)}</b><small>${esc(t.records?.[0]?.summary || '')}</small>${live && possId === t.id ? '<span class="poss" title="Possession"></span>' : ''}</div>
     <div class="score ${done && !t.winner ? 'lost' : ''}">${pre ? '' : esc(t.score)}</div>`;
   const bc = c.broadcasts?.[0]?.names?.join('/') || c.broadcast || '';
   const odds = c.odds?.[0];
@@ -406,7 +455,7 @@ async function game(id, tab = 'box') {
   // live situation + recent plays
   let liveHTML = '';
   if (live) {
-    const sbEv = (cache.get(`${API}/scoreboard`)?.v?.events || []).find(e => e.id === String(id)); const sit = sbEv?.competitions?.[0]?.situation || {};
+    const sbEv = (cache.get(SB_URL())?.v?.events || []).find(e => e.id === String(id)); const sit = sbEv?.competitions?.[0]?.situation || {};
     const cur = s.drives?.current; const recent = [...(cur?.plays || []), ...((s.drives?.previous || []).slice(-1)[0]?.plays || [])].slice(-12).reverse();
     const possTeam = sit.possession === h.team.id ? h.team : sit.possession === a.team.id ? a.team : null;
     const yl = sit.yardLine != null ? Number(sit.yardLine) : null;
@@ -429,7 +478,7 @@ async function game(id, tab = 'box') {
   };
   document.getElementById('gtab').innerHTML = content[tab] || content.box;
   view.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { history.replaceState(null, '', `#game/${id}/${b.dataset.tab}`); game(id, b.dataset.tab); });
-  if (live) poll(async () => { await getJSON(`${API}/scoreboard`, 30000).catch(() => {}); return game(id, tab); });
+  if (live) poll(async () => { await getJSON(SB_URL(), 30000).catch(() => {}); return game(id, tab); });
 }
 
 
@@ -446,7 +495,7 @@ const fmtClock = (st, c) => st.state === 'in' ? `${c.status?.period ? (c.status.
 const fieldX = (yardLine, possIsHome) => { const y = Math.max(0, Math.min(100, num(yardLine))); return possIsHome ? 100 - y : y; };
 
 async function gcState(id) {
-  const [s, sb] = await Promise.all([getJSON(`${API}/summary?event=${id}`, 15000), getJSON(`${API}/scoreboard`, 15000).catch(() => null)]);
+  const [s, sb] = await Promise.all([getJSON(`${API}/summary?event=${id}`, 15000), getJSON(SB_URL(), 15000).catch(() => null)]);
   const hdr = s.header?.competitions?.[0]; if (!hdr) throw new Error('No game header in summary feed.');
   const ev = (sb?.events || []).find(e => e.id === String(id)); const c = ev?.competitions?.[0];
   const st = (c?.status?.type) || hdr.status.type; const [a, h] = byHome(hdr);
@@ -461,7 +510,7 @@ async function gcState(id) {
 function scorebugHTML(S) {
   const { a, h, score, st, sit, c, live } = S;
   const poss = sit.possession; const to = (n) => `<span class="tos">${[0,1,2].map(i => `<i class="${i < num(n) ? 'on' : ''}"></i>`).join('')}</span>`;
-  const side = (t, sc, isHome) => `<div class="sb-team ${isHome ? 'home' : 'away'} ${poss === t.team.id ? 'poss' : ''}" style="--tc:${colorOf(t.team)}"><img src="${esc(logo(t.team))}" alt=""><div class="sb-name"><b>${esc(t.team.abbreviation)}</b><small>${esc(t.record?.[0]?.displayValue || '')}</small>${live ? to(isHome ? sit.homeTimeouts : sit.awayTimeouts) : ''}</div><div class="sb-score" data-side="${isHome ? 'h' : 'a'}">${S.pre ? '' : sc}</div></div>`;
+  const side = (t, sc, isHome) => `<div class="sb-team ${isHome ? 'home' : 'away'} ${poss === t.team.id ? 'poss' : ''}" style="--tc:${colorOf(t.team)}"><img src="${esc(logo(t.team))}" alt=""><div class="sb-name"><b>${rankBadge(isHome ? (S.c?.competitors?.find(x => x.homeAway === 'home')) : (S.c?.competitors?.find(x => x.homeAway === 'away')))}${esc(t.team.abbreviation)}</b><small>${esc(t.record?.[0]?.displayValue || '')}</small>${live ? to(isHome ? sit.homeTimeouts : sit.awayTimeouts) : ''}</div><div class="sb-score" data-side="${isHome ? 'h' : 'a'}">${S.pre ? '' : sc}</div></div>`;
   const mid = live ? `<div class="sb-mid"><b class="sb-clock">${esc(fmtClock(st, c))}</b><small>${esc(sit.downDistanceText || sit.shortDownDistanceText || '')}</small>${sit.isRedZone ? '<em class="rz">Red zone</em>' : ''}</div>` : `<div class="sb-mid"><b class="sb-clock">${S.pre ? esc(fmtShort(S.ev?.date || S.s.header?.competitions?.[0]?.date)) : 'Final'}</b><small>${S.pre ? esc(S.c?.odds?.[0]?.details || '') : esc(st.detail || '')}</small></div>`;
   return `${side(a, score.a, false)}${mid}${side(h, score.h, true)}`;
 }
@@ -638,7 +687,7 @@ function watchLive(events) {
 /* ---------- RedZone view: every live game on one screen ---------- */
 const rzLast = {};
 async function redzone() {
-  const sb = await getJSON(`${API}/scoreboard`, 15000); watchScores(sb.events); watchLive(sb.events);
+  const sb = await getJSON(SB_URL(), 15000); watchScores(sb.events); watchLive(sb.events);
   const live = sb.events.filter(e => e.status.type.state === 'in'), up = sb.events.filter(e => e.status.type.state === 'pre').sort((x, y) => new Date(x.date) - new Date(y.date)), done = sb.events.filter(e => e.status.type.completed);
   const excite = ev => { const c = ev.competitions[0], [a, h] = byHome(c); const margin = Math.abs(num(a.score) - num(h.score)); const q = c.status?.period || 1; const [m] = (c.status?.displayClock || '15:00').split(':'); const late = q >= 4 ? 1 - num(m) / 15 : (q - 1) / 4 * .5; return (c.situation?.isRedZone ? 3 : 0) + late * 4 + Math.max(0, 3 - margin / 4) + (favGame(ev) ? 2 : 0); };
   live.sort((x, y) => excite(y) - excite(x));
@@ -653,25 +702,29 @@ async function redzone() {
 }
 
 /* ---------- standings ---------- */
-async function standings(conf = 'AFC') {
+async function standings(conf) {
   const d = await standingsL3();
-  const confs = d.children || [];
-  const c = confs.find(x => x.abbreviation === conf) || confs[0];
+  const confs = (d.children || []).slice().sort(isCFB() ? confOrder : () => 0);
+  const c = confs.find(x => x.abbreviation === conf || x.id === conf) || confs[0];
   const stat = (e, n) => e.stats.find(s => s.name === n)?.displayValue ?? '–';
-  const cols = [['W','wins'],['L','losses'],['T','ties'],['PCT','winPercent'],['PF','pointsFor'],['PA','pointsAgainst'],['DIFF','differential'],['HOME','Home'],['AWAY','Road'],['DIV','vs. Div.'],['CONF','vs. Conf.'],['STRK','streak']];
-  view.innerHTML = `<div class="bar"><div><h1>Standings</h1><h2>${SEASON} regular season · click a column to sort</h2></div>
-    <div class="chips">${confs.map(x => `<a class="chip ${x === c ? 'on' : ''}" href="#standings/${esc(x.abbreviation)}">${esc(x.abbreviation)}</a>`).join('')}</div></div>
+  const cols = isCFB() ? [['CONF','vs. Conf.'],['OVR','overall'],['PF','pointsFor'],['PA','pointsAgainst'],['DIFF','pointDifferential'],['HOME','Home'],['AWAY','Away'],['vs AP','vs AP Top 25'],['STRK','streak']]
+                       : [['W','wins'],['L','losses'],['T','ties'],['PCT','winPercent'],['PF','pointsFor'],['PA','pointsAgainst'],['DIFF','differential'],['HOME','Home'],['AWAY','Road'],['DIV','vs. Div.'],['CONF','vs. Conf.'],['STRK','streak']];
+  view.innerHTML = `<div class="bar"><div><h1>Standings</h1><h2>${SEASON} regular season · ${isCFB() ? esc(c?.name || '') : 'click a column to sort'}</h2></div>
+    ${isCFB() ? `<select id="confsel" aria-label="Conference">${confs.map(x => `<option value="${esc(x.id || x.abbreviation)}" ${x === c ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : `<div class="chips">${confs.map(x => `<a class="chip ${x === c ? 'on' : ''}" href="#standings/${esc(x.abbreviation)}">${esc(x.abbreviation)}</a>`).join('')}</div>`}</div>
+    ${isCFB() ? `<div class="chips" style="margin-bottom:var(--s4)">${confs.filter(x => P4.some(p => x.name.includes(p))).map(x => `<a class="chip ${x === c ? 'on' : ''}" href="#standings/${esc(x.id || x.abbreviation)}">${esc(x.abbreviation || x.name)}</a>`).join('')}</div>` : ''}
     <div class="stack">${(c.children || []).map((div, di) => `<div class="panel"><h3>${esc(div.name)}</h3><div class="tw"><table id="st${di}"><thead><tr><th class="sort" data-k="team">Team</th>${cols.map(k => `<th class="num sort" data-k="${k[1]}">${k[0]}</th>`).join('')}</tr></thead><tbody></tbody></table></div></div>`).join('')}</div>`;
   (c.children || []).forEach((div, di) => {
-    const colFns = { team: e => e.team.displayName }; cols.forEach(k => colFns[k[1]] = e => { const v = e.stats.find(s => s.name === k[1]); return v?.value != null && !isNaN(v.value) ? Number(v.value) : String(v?.displayValue ?? ''); });
+    const colFns = { team: e => e.team.displayName }; cols.forEach(k => colFns[k[1]] = e => { const v = e.stats.find(s => s.name === k[1]); if (v?.value != null && !isNaN(v.value) && !/^\d+-\d+/.test(String(v.displayValue))) return Number(v.value); const m = String(v?.displayValue ?? '').match(/^(\d+)-(\d+)/); return m ? (Number(m[1]) + 0.5) / (Number(m[1]) + Number(m[2]) + 1) + Number(m[1]) / 1000 : String(v?.displayValue ?? ''); });
     const table = document.getElementById('st' + di);
-    sortable(table, div.standings.entries, colFns, e => `<tr class="clk ${isFav(e.team.id) ? 'fav' : ''}" data-t="${esc(e.team.id)}"><td class="tm"><img src="${esc(logo(e.team))}" alt="">${esc(e.team.displayName)}</td>${cols.map(k => { const v = stat(e, k[1]); const cls = k[1] === 'differential' ? (num(v) > 0 ? 'pos' : num(v) < 0 ? 'neg' : '') : ''; return `<td class="num ${cls}">${esc(v)}</td>`; }).join('')}</tr>`, 'winPercent');
+    sortable(table, div.standings.entries, colFns, e => `<tr class="clk ${isFav(e.team.id) ? 'fav' : ''}" data-t="${esc(e.team.id)}"><td class="tm"><img src="${esc(logo(e.team))}" alt="">${esc(e.team.displayName)}</td>${cols.map(k => { const v = stat(e, k[1]); const cls = /differential/i.test(k[1]) ? (num(v) > 0 ? 'pos' : num(v) < 0 ? 'neg' : '') : ''; return `<td class="num ${cls}">${esc(v)}</td>`; }).join('')}</tr>`, isCFB() ? 'vs. Conf.' : 'winPercent');
     table.addEventListener('drawn', wire); wire();
   });
+  const cs = document.getElementById('confsel'); if (cs) cs.onchange = e => location.hash = 'standings/' + e.target.value;
 }
 
 /* ---------- playoff picture ---------- */
-async function playoffs() {
+async function playoffs(sub) {
+  if (isCFB()) return rankings(sub);
   const d = await getJSON(`${API2}/standings?season=${SEASON}`, 300000);
   const stat = (e, n) => e.stats.find(s => s.name === n)?.displayValue ?? '–';
   const sval = (e, n) => Number(e.stats.find(s => s.name === n)?.value ?? 99);
@@ -686,7 +739,7 @@ async function playoffs() {
   let bracket = '';
   if (!isCur()) {
     const post = (await seasonGames()).filter(ev => ev._post);
-    const rounds = POST.map(([v, l]) => [l, post.filter(ev => ev._wk?.n === Number(v))]).filter(x => x[1].length);
+    const rounds = POST().map(([v, l]) => [l, post.filter(ev => ev._wk?.n === Number(v))]).filter(x => x[1].length);
     bracket = rounds.length ? `<div class="grid" style="margin-bottom:14px">${rounds.map(([l, evs]) => `<div class="panel"><h3>${esc(l)}</h3>${evs.map(gameCard).join('')}</div>`).join('')}</div>` : '';
   }
   view.innerHTML = `<div class="bar"><div><h1>${isCur() ? 'Playoff picture' : SEASON + ' playoffs'}</h1><h2>${isCur() ? 'If the season ended today · seeds from ESPN\'s standings' : 'Results by round, then final regular-season seeding'}</h2></div>${isCur() ? '<a class="chip" href="#odds">Simulated playoff odds →</a>' : ''}</div>
@@ -694,23 +747,46 @@ async function playoffs() {
   wire();
 }
 
+/* ---------- college rankings + projected CFP bracket ---------- */
+async function rankings(pollName) {
+  const d = await getJSON(`${API}/rankings`, 300000); const idx = await teamsIndex().catch(() => ({}));
+  const polls = (d.rankings || []).filter(r => r.ranks?.length);
+  if (!polls.length) { view.innerHTML = '<div class="panel"><div class="empty">Rankings are published once the season starts.</div></div>'; return; }
+  const sel = polls.find(p => p.type === pollName || p.shortName === pollName) || polls.find(p => /cfp|playoff/i.test(p.name)) || polls[0];
+  const cfp = polls.find(p => /cfp|playoff/i.test(p.name)) || polls.find(p => /ap/i.test(p.type)) || polls[0];
+  const top12 = cfp.ranks.slice(0, 12);
+  const tm = r => ({ id: r.team?.id, name: r.team?.nickname ? (r.team.location ? r.team.location + ' ' + r.team.nickname : r.team.nickname) : r.team?.name, abbr: r.team?.abbreviation, logo: r.team?.logo || r.team?.logos?.[0]?.href, rec: r.recordSummary });
+  const seedCard = (r, i) => { const t = tm(r); return `<a class="seed-card" href="#team/${esc(t.id)}" style="--tc:${colorOf(idx[t.id] || r.team)}"><span class="sd">${i + 1}</span><img src="${esc(t.logo)}" alt=""><div><b>${esc(t.abbr || t.name)}</b><small>${esc(t.rec || '')}</small></div></a>`; };
+  const matchup = (hi, lo) => `<div class="mu">${seedCard(top12[hi], hi)}<span class="muted">vs</span>${seedCard(top12[lo], lo)}</div>`;
+  view.innerHTML = `<div class="bar"><div><h1>Rankings</h1><h2>${esc(sel.headline || sel.name)}${sel.occurrence?.displayValue ? ' · ' + esc(sel.occurrence.displayValue) : ''}</h2></div><div class="chips">${polls.map(p => `<a class="chip ${p === sel ? 'on' : ''}" href="#playoffs/${esc(p.type || p.shortName)}">${esc(p.shortName || p.name)}</a>`).join('')}</div></div>
+    <div class="two"><div class="panel"><h3>${esc(sel.name)}<span class="pill">${sel.ranks.length} teams</span></h3><div class="tw"><table><thead><tr><th>#</th><th>Team</th><th class="num">Record</th><th class="num">Pts</th><th class="num">1st</th><th class="num">Prev</th><th class="num">Trend</th></tr></thead><tbody>
+      ${sel.ranks.map(r => { const t = tm(r); const tr = String(r.trend || '-'); return `<tr class="clk ${isFav(t.id) ? 'fav' : ''}" data-t="${esc(t.id)}"><td class="num">${esc(r.current)}</td><td class="tm"><img src="${esc(t.logo)}" alt="">${esc(t.name)}</td><td class="num">${esc(t.rec || '')}</td><td class="num">${esc(r.points ?? '')}</td><td class="num">${r.firstPlaceVotes ? esc(r.firstPlaceVotes) : ''}</td><td class="num muted">${esc(r.previous || '–')}</td><td class="num ${tr.startsWith('+') ? 'pos' : tr.startsWith('-') && tr !== '-' ? 'neg' : ''}">${esc(tr)}</td></tr>`; }).join('')}
+      ${(sel.others || []).length ? `<tr><td colspan="7" class="muted" style="white-space:normal;font-size:13px"><b>Others receiving votes:</b> ${sel.others.map(o => esc((o.team?.nickname || o.team?.name) + ' ' + (o.points || ''))).join(', ')}</td></tr>` : ''}
+    </tbody></table></div></div>
+    <div class="stack"><div class="panel"><h3>Projected 12-team playoff<span class="pill">from ${esc(cfp.shortName || cfp.name)}</span></h3>
+      <div class="lhead" style="grid-template-columns:1fr"><span>First-round byes</span></div><div class="byes">${top12.slice(0, 4).map(seedCard).join('')}</div>
+      <div class="lhead" style="grid-template-columns:1fr"><span>First round · on campus</span></div><div class="mus">${matchup(4, 11)}${matchup(5, 10)}${matchup(6, 9)}${matchup(7, 8)}</div>
+      <p class="note" style="padding:0 16px 12px;margin:0">Straight seeding from the poll's top 12. The real bracket gives automatic bids to the five highest-ranked conference champions, so the field can differ late in the season.</p></div></div></div>`;
+  wire();
+}
+
 /* ---------- power index (computed) ---------- */
 async function power() {
-  const [d, res] = await Promise.all([getJSON(`${API2}/standings?season=${SEASON}`, 300000), teamResults().catch(() => ({}))]);
+  const [d, res] = await Promise.all([standingsL3(), teamResults().catch(() => ({}))]);
   const rows = [];
-  (d.children || []).forEach(c => c.standings.entries.forEach(e => {
+  d.children.forEach(c => c.children.forEach(div => (div.standings?.entries || []).forEach(e => {
     const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0);
     const w = v('wins'), l = v('losses'), t = v('ties'), g = w + l + t, pf = v('pointsFor'), pa = v('pointsAgainst');
     const pyth = (pf || pa) ? Math.pow(pf, 2.37) / (Math.pow(pf, 2.37) + Math.pow(pa, 2.37)) : 0.5;
     const pct = g ? (w + t / 2) / g : 0;
-    rows.push({ team: e.team, conf: c.abbreviation, w, l, t, g, pf, pa, diff: pf - pa, mov: g ? (pf - pa) / g : 0, pyth, pct, luck: pct - pyth, pythW: pyth * g, streak: e.stats.find(s => s.name === 'streak')?.displayValue || '' });
-  }));
+    rows.push({ team: e.team, conf: c.abbreviation || c.name, w, l, t, g, pf, pa, diff: pf - pa, mov: g ? (pf - pa) / g : 0, pyth, pct, luck: pct - pyth, pythW: pyth * g, streak: e.stats.find(s => s.name === 'streak')?.displayValue || '' });
+  })));
   const pctOf = {}; rows.forEach(r => pctOf[r.team.id] = r.pct);
   rows.forEach(r => { const gs = res[r.team.id] || []; r.sos = gs.length ? gs.reduce((n, g) => n + (pctOf[g.op] ?? .5), 0) / gs.length : .5; const l3 = gs.slice(-3); r.last3 = l3.length ? l3.reduce((n, g) => n + (g.ms - g.os), 0) / l3.length : 0; });
   rows.forEach(r => r.rating = r.mov * 0.6 + (r.pyth - 0.5) * 24 + (r.sos - 0.5) * 12 + r.last3 * 0.15);
   rows.sort((a, b) => b.rating - a.rating).forEach((r, i) => r.rank = i + 1);
   view.innerHTML = `<div class="bar"><div><h1>Power index</h1><h2>Computed here from scoring, schedule strength and recent form · not an ESPN ranking</h2></div></div>
-    <div class="panel"><h3>All 32 teams<span class="pill">click a column to sort</span></h3><div class="tw"><table id="pw"><thead><tr><th class="sort" data-k="rank">#</th><th class="sort" data-k="team">Team</th><th class="num sort" data-k="rec">Record</th><th class="num sort" data-k="rating">Rating</th><th class="num sort" data-k="mov">MOV</th><th class="num sort" data-k="pf">PF/G</th><th class="num sort" data-k="pa">PA/G</th><th class="num sort" data-k="pyth">Pyth W-L</th><th class="num sort" data-k="luck">Luck</th><th class="num sort" data-k="sos">SOS</th><th class="num sort" data-k="last3">Last 3 MOV</th><th class="num">STRK</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="panel"><h3>All ${rows.length} teams<span class="pill">click a column to sort</span></h3><div class="tw"><table id="pw"><thead><tr><th class="sort" data-k="rank">#</th><th class="sort" data-k="team">Team</th><th class="num sort" data-k="rec">Record</th><th class="num sort" data-k="rating">Rating</th><th class="num sort" data-k="mov">MOV</th><th class="num sort" data-k="pf">PF/G</th><th class="num sort" data-k="pa">PA/G</th><th class="num sort" data-k="pyth">Pyth W-L</th><th class="num sort" data-k="luck">Luck</th><th class="num sort" data-k="sos">SOS</th><th class="num sort" data-k="last3">Last 3 MOV</th><th class="num">STRK</th></tr></thead><tbody></tbody></table></div></div>
     <p class="note">Rating blends margin of victory, Pythagorean expectation (exponent 2.37), opponents' win percentage (SOS) and average margin over the last three games. <b>Luck</b> is actual win% minus expected: positive means the team has won more than its scoring suggests.</p>`;
   const table = document.getElementById('pw');
   sortable(table, rows, { rank: r => -r.rank, team: r => r.team.displayName, rec: r => r.pct, rating: r => r.rating, mov: r => r.mov, pf: r => r.g ? r.pf / r.g : 0, pa: r => r.g ? -r.pa / r.g : 0, pyth: r => r.pyth, luck: r => r.luck, sos: r => r.sos, last3: r => r.last3 },
@@ -727,7 +803,7 @@ let liveCache = { t: 0, data: null };
 async function liveBox() {
   if (!isCur()) return { players: {}, games: [] };
   if (liveCache.data && Date.now() - liveCache.t < 30000) return liveCache.data;
-  const sb = await getJSON(`${API}/scoreboard`, 30000).catch(() => ({ events: [] }));
+  const sb = await getJSON(SB_URL(), 30000).catch(() => ({ events: [] }));
   const live = (sb.events || []).filter(e => e.status.type.state === 'in');
   const players = {};
   await Promise.all(live.map(async ev => { try { const sum = await getJSON(`${API}/summary?event=${ev.id}`, 30000);
@@ -736,6 +812,20 @@ async function liveBox() {
 }
 const liveVal = (rec, key) => { const m = LIVE_MAP[key]; if (!m || !rec) return 0; const raw = rec.cats[m[0]]?.[m[1]]; if (raw == null) return 0; return m[2] != null ? num(String(raw).split(/[\/-]/)[m[2]]) : num(raw); };
 
+// college: expand one category to ESPN's top 50 by resolving the core feed's athlete links (cached)
+async function expandCategory(cat) {
+  if (!cat?.expandable || cat.expanded) return cat;
+  const core = await getJSON(`${CORE}/seasons/${SEASON}/types/2/leaders?limit=50`, 300000).catch(() => null);
+  const cc = (core?.categories || []).find(c => c.name === cat.name); if (!cc) return cat;
+  const idx = await teamsIndex().catch(() => ({}));
+  const known = {}; cat.leaders.forEach(l => known[l.athlete.id] = l);
+  const idOf = ref => (ref?.$ref || '').match(/\/(athletes|teams)\/(\d+)/)?.[2];
+  const rows = cc.leaders.filter(l => l.value > 0);
+  const out = []; for (let i = 0; i < rows.length; i += 10) { await Promise.all(rows.slice(i, i + 10).map(async l => { const aid = idOf(l.athlete), tid = idOf(l.team); let a = known[aid]?.athlete;
+    if (!a) { try { const d = await getJSON(`${CORE}/seasons/${SEASON}/athletes/${aid}`, 3600000); a = { id: aid, displayName: d.displayName, headshot: { href: d.headshot?.href || '' }, position: { abbreviation: d.position?.abbreviation || '' } }; } catch { a = { id: aid, displayName: 'Player #' + aid, headshot: { href: '' }, position: { abbreviation: '' } }; } }
+    out.push({ displayValue: l.displayValue, value: l.value, athlete: a, team: idx[tid] || known[aid]?.team || { id: tid, abbreviation: '' } }); })); }
+  out.sort((a, b) => b.value - a.value); cat.leaders = out; cat.expanded = true; return cat;
+}
 /* ---------- leaders ---------- */
 const LGROUPS = [
   ['Passing', ['passingYards','passingTouchdowns','QBRating','passerRating','completionPct','yardsPerPassAttempt','interceptions_thrown','passingYardsPerGame','completions','passingAttempts']],
@@ -778,7 +868,7 @@ async function leaders(cat) {
       <div class="lfilters" style="margin-top:14px"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Filter</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}<select id="lteam" aria-label="Team" style="margin-left:auto"><option value="">All teams</option>${teamsIn.map(t => `<option value="${esc(t.id)}">${esc(t.abbreviation || t.displayName)}</option>`).join('')}</select></div>
       <div class="lhead"><span>#</span><span></span><span>Player</span><span>vs leader</span><span>${esc(sel.abbreviation)}</span></div>
       <div id="mainlist"></div>
-      <div id="morewrap" class="empty" style="padding:12px"><button class="chip" id="more">Show all ${sel.leaders.length}</button></div>
+      <div id="morewrap" class="empty" style="padding:12px"><button class="chip" id="more">${sel.expandable && !sel.expanded ? 'Load ESPN top 50' : 'Show all ' + sel.leaders.length}</button></div>
     </div>
     <div class="stack lside">${grp[1].filter(c => c !== sel).slice(0, 4).concat(groups.filter(x => x !== grp).map(x => x[1][0])).slice(0, 5).map(c => `<div class="panel"><h3>${esc(c.displayName)}<a class="lnk" style="font-size:12px;letter-spacing:0;text-transform:none" href="#leaders/${esc(c.name)}">All ${c.leaders.length} →</a></h3>${c.leaders.slice(0, 5).map((l, i) => `<a class="leader" href="#player/${esc(l.athlete.id)}"><span class="rank num">${i + 1}</span><img src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub">${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')}</div></div><span class="val">${esc(l.displayValue)}</span></a>`).join('')}</div>`).join('')}</div></div>`;
   const row = (l, i) => { const pct = Math.max(2, Math.min(100, l.value / top * 100)); const t = idx[l.team?.id] || l.team; return `<a class="lrow ${isFav(l.team?.id) ? 'me' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${colorOf(t)}"><span class="r ${i < 3 ? 't3' : ''}">${i + 1}</span><img class="ph" src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub"><img src="${esc(logo(t))}" alt="">${esc(l.athlete.position?.abbreviation || '')} · ${esc(t?.abbreviation || '')}</div></div><div class="bar" title="${Math.round(pct)}% of leader"><i style="width:${pct}%"></i></div><span class="v">${esc(l.displayValue)}${l.liveAdd ? `<small class="livetag">incl. +${esc(l.liveAdd)} live</small>` : i > 0 ? `<small>${esc((l.value - top).toFixed(/\./.test(l.displayValue) ? 1 : 0))}</small>` : '<small>leader</small>'}</span></a>`; };
@@ -786,10 +876,10 @@ async function leaders(cat) {
     const hits = sel.leaders.filter(l => (!posF || l.athlete.position?.abbreviation === posF) && (!teamF || l.team?.id === teamF) && (!q || (l.athlete.displayName + ' ' + (l.team?.abbreviation || '')).toLowerCase().includes(q)));
     const lim = (q || posF || teamF) ? 200 : shown;
     document.getElementById('mainlist').innerHTML = hits.slice(0, lim).map(l => row(l, sel.leaders.indexOf(l))).join('') || '<div class="empty">No players match.</div>';
-    document.getElementById('morewrap').hidden = hits.length <= lim; };
+    document.getElementById('morewrap').hidden = hits.length <= lim && !(sel.expandable && !sel.expanded); };
   render();
   document.getElementById('pq').oninput = render;
-  document.getElementById('more').onclick = () => { shown = 1000; render(); };
+  document.getElementById('more').onclick = async () => { if (sel.expandable && !sel.expanded) { document.getElementById('more').textContent = 'Loading…'; await expandCategory(sel); leaders(cat); return; } shown = 1000; render(); };
   document.getElementById('lteam').onchange = e => { teamF = e.target.value; render(); };
   view.querySelectorAll('[data-pos]').forEach(b => b.onclick = () => { posF = b.dataset.pos; view.querySelectorAll('[data-pos]').forEach(x => x.classList.toggle('on', x === b)); render(); });
   view.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { const g = groups.find(x => x[0] === b.dataset.g); if (g) location.hash = 'leaders/' + g[1][0].name; });
@@ -802,13 +892,13 @@ async function players(q0) {
     <div class="prog" id="rp"><i style="width:0"></i></div>
     <div class="panel" style="margin-top:14px"><h3 id="pcount">Loading rosters…</h3><div class="plist" id="plist"></div></div>`;
   const input = document.getElementById('ps'); input.value = decodeURIComponent(q0 || ''); input.focus();
-  const list = await allRosters(p => { const b = document.querySelector('#rp i'); if (b) b.style.width = p * 100 + '%'; });
+  const list = isCFB() ? [] : await allRosters(p => { const b = document.querySelector('#rp i'); if (b) b.style.width = p * 100 + '%'; });
   document.getElementById('rp')?.remove();
   let seq = 0, timer;
   const render = async () => {
     const q = input.value.trim().toLowerCase(); const el = document.getElementById('plist'); if (!el) return; const my = ++seq;
     const hits = q ? list.filter(p => (p.name + ' ' + p.team.abbreviation + ' ' + p.team.displayName + ' ' + p.pos).toLowerCase().includes(q)) : list.filter(p => isFav(p.team.id));
-    document.getElementById('pcount').textContent = q ? `${hits.length} on current rosters` : favs.length ? `${hits.length} on your teams` : `${list.length} players loaded · type a name (current or past players)`;
+    document.getElementById('pcount').textContent = isCFB() ? (q ? 'Results' : 'Type a player name') : q ? `${hits.length} on current rosters` : favs.length ? `${hits.length} on your teams` : `${list.length} players loaded · type a name (current or past players)`;
     const rowHTML = p => `<a href="#player/${esc(p.id)}"><img src="${esc(p.hs)}" alt="" loading="lazy"><span><b>${esc(p.name)}</b> <span class="muted">#${esc(p.jersey)} ${esc(p.pos)} · ${esc(p.team.displayName)}</span>${p.inj ? ' ' + injTag(p.inj) : ''}</span><img src="${esc(logo(p.team))}" alt="" style="border-radius:0;object-fit:contain"></a>`;
     el.innerHTML = hits.slice(0, 80).map(rowHTML).join('') + (q.length >= 2 ? '<div class="hd" id="alltime" style="padding:10px 16px;color:var(--muted);font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;background:var(--panel-2)">Searching all players since 2000…</div>' : '');
     if (q.length < 2) return;
@@ -892,8 +982,13 @@ async function player(id, tab = 'season') {
 async function teams() {
   const idx = await teamsIndex();
   const list = Object.values(idx).sort((a, b) => a.displayName.localeCompare(b.displayName));
-  view.innerHTML = `<div class="bar"><div><h1>Teams</h1><h2>All 32 clubs${favs.length ? ' · ★ ' + favs.map(f => esc(idx[f]?.abbreviation || '')).join(', ') : ''}</h2></div></div>
-    <div class="teams">${list.map(t => `<a class="tcard" href="#team/${esc(t.id)}" style="--tc:${colorOf(t)};${isFav(t.id) ? 'border-color:var(--gold)' : ''}"><img src="${esc(logo(t))}" alt="" loading="lazy"><b>${esc(t.displayName)}</b><small>${esc(t.stats?.find(s => s.name === 'overall')?.displayValue || '')}</small></a>`).join('')}</div>`;
+  const card = t => `<a class="tcard" href="#team/${esc(t.id)}" style="--tc:${colorOf(t)};${isFav(t.id) ? 'border-color:var(--gold)' : ''}"><img src="${esc(logo(t))}" alt="" loading="lazy"><b>${esc(t.displayName)}</b><small>${esc(t.stats?.find(s => s.name === 'overall')?.displayValue || '')}</small></a>`;
+  let body;
+  if (isCFB()) { const groups = {}; list.forEach(t => (groups[t.confName || t.conf || 'Other'] ||= []).push(t)); const names = Object.keys(groups).sort((a, b) => confOrder({ name: a }, { name: b }));
+    body = `<input id="tq" placeholder="Find a team" aria-label="Find a team" style="margin-bottom:var(--s4);min-width:min(100%,280px)"><div class="stack" id="tgroups">${names.map(n => `<div class="panel" data-conf="${esc(n)}"><h3>${esc(n)}<span class="pill">${groups[n].length}</span></h3><div class="teams" style="padding:var(--s3)">${groups[n].map(card).join('')}</div></div>`).join('')}</div>`; }
+  else body = `<div class="teams">${list.map(card).join('')}</div>`;
+  view.innerHTML = `<div class="bar"><div><h1>Teams</h1><h2>${isCFB() ? 'FBS · ' + list.length + ' teams by conference' : 'All 32 clubs'}${favs.length ? ' · ★ ' + favs.map(f => esc(idx[f]?.abbreviation || '')).join(', ') : ''}</h2></div></div>${body}`;
+  const tq = document.getElementById('tq'); if (tq) tq.oninput = () => { const q = tq.value.toLowerCase(); view.querySelectorAll('.tcard').forEach(c => c.style.display = !q || c.textContent.toLowerCase().includes(q) ? '' : 'none'); view.querySelectorAll('[data-conf]').forEach(p => p.style.display = [...p.querySelectorAll('.tcard')].some(c => c.style.display !== 'none') ? '' : 'none'); };
 }
 
 async function team(id, tab = 'schedule') {
@@ -918,9 +1013,9 @@ async function team(id, tab = 'schedule') {
   const home = played.filter(g => g.me.homeAway === 'home'), away = played.filter(g => g.me.homeAway !== 'home');
   const wl = arr => `${arr.filter(g => g.res === 'W').length}-${arr.filter(g => g.res === 'L').length}`;
   let divHTML = '';
-  if (stnd) for (const conf of stnd.children || []) for (const div of conf.children || []) if (div.standings.entries.some(e => e.team.id === String(id))) {
+  if (stnd) for (const conf of stnd.children || []) for (const div of conf.children || []) if ((div.standings?.entries || []).some(e => e.team.id === String(id))) {
     const stat = (e, n) => e.stats.find(s => s.name === n)?.displayValue ?? '–';
-    divHTML = `<div class="panel"><h3>${esc(div.name)}</h3><div class="tw"><table><thead><tr><th>Team</th><th class="num">W-L</th><th class="num">DIFF</th></tr></thead><tbody>${div.standings.entries.map(e => `<tr class="clk ${e.team.id === String(id) ? 'hl' : ''}" data-t="${esc(e.team.id)}"><td class="tm"><img src="${esc(logo(e.team))}" alt="">${esc(e.team.abbreviation)}</td><td class="num">${esc(stat(e,'overall'))}</td><td class="num">${esc(stat(e,'differential'))}</td></tr>`).join('')}</tbody></table></div></div>`;
+    divHTML = `<div class="panel"><h3>${esc(div.name)}</h3><div class="tw"><table><thead><tr><th>Team</th>${isCFB() ? '<th class="num">CONF</th>' : ''}<th class="num">W-L</th><th class="num">DIFF</th></tr></thead><tbody>${div.standings.entries.map(e => `<tr class="clk ${e.team.id === String(id) ? 'hl' : ''}" data-t="${esc(e.team.id)}"><td class="tm"><img src="${esc(logo(e.team))}" alt="">${esc(e.team.abbreviation)}</td>${isCFB() ? `<td class="num">${esc(stat(e,'vs. Conf.'))}</td>` : ''}<td class="num">${esc(stat(e,'overall'))}</td><td class="num">${esc(stat(e, isCFB() ? 'pointDifferential' : 'differential'))}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
   const tInj = (inj?.injuries || []).find(x => x.id === String(id))?.injuries || [];
   const mine = isFav(id);
@@ -971,11 +1066,11 @@ async function team(id, tab = 'schedule') {
   if (isCur()) buildModel().then(M => { const el = document.getElementById('remsched'); if (!el) return; const rem = M.remaining.filter(g => g.a === String(id) || g.h === String(id)).sort((x, y) => (x.wk || 0) - (y.wk || 0));
     const rows = rem.map(g => { const home = g.h === String(id); const op = home ? g.a : g.h; const p = home ? M.pWin(g.h, g.a) : 1 - M.pWin(g.h, g.a); return { g, home, op, p }; });
     const xw = rows.reduce((n, r) => n + r.p, 0); const sos = rows.length ? rows.reduce((n, r) => n + M.T[r.op].rating, 0) / rows.length : 0;
-    const hist = store.get('oddsHist:' + SEASON, {}); const pts = Object.keys(hist).map(Number).sort((a, b) => a - b).filter(w => hist[w][id] != null);
+    const hist = store.get(LK('oddsHist:' + SEASON), {}); const pts = Object.keys(hist).map(Number).sort((a, b) => a - b).filter(w => hist[w][id] != null);
     el.outerHTML = (rows.length ? `<div class="panel"><h3>Remaining schedule<span class="pill">${xw.toFixed(1)} proj. wins · opp rating ${sgn(sos.toFixed(1))}</span></h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opponent</th><th class="num">Opp rtg</th><th class="num">Win %</th></tr></thead><tbody>${rows.map(r => `<tr class="clk" data-g="${esc(r.g.ev.id)}"><td class="num">${esc(r.g.wk)}</td><td class="tm"><img src="${esc(logo(M.T[r.op].team))}" alt="">${r.home ? 'vs' : '@'} ${esc(M.T[r.op].team.abbreviation)}</td><td class="num ${M.T[r.op].rating > 0 ? 'neg' : 'pos'}">${sgn(M.T[r.op].rating.toFixed(1))}</td><td class="num ${r.p >= .6 ? 'pos' : r.p <= .4 ? 'neg' : ''}"><b>${Math.round(r.p * 100)}%</b></td></tr>`).join('')}</tbody></table></div></div>` : '')
       + (pts.length >= 2 ? `<div class="panel"><h3>Playoff odds over time</h3><div class="chart">${lineChart([{ v: pts.map(w => hist[w][id] * 100), cls: 'lA', area: true }], pts.map(w => 'W' + w))}</div><p class="note" style="padding:0 14px 10px;margin:0">From your visits to the Odds page each week.</p></div>` : '');
     wire(); }).catch(() => {});
-  document.getElementById('favbtn').onclick = () => { favs = mine ? favs.filter(f => f !== String(id)) : [...favs, String(id)]; store.set('favTeams', favs); toast(mine ? 'Removed from my teams' : t.displayName + ' added to my teams'); team(id, tab); ticker(); };
+  document.getElementById('favbtn').onclick = () => { favs = mine ? favs.filter(f => f !== String(id)) : [...favs, String(id)]; store.set(LK('favTeams'), favs); toast(mine ? 'Removed from my teams' : t.displayName + ' added to my teams'); team(id, tab); ticker(); };
 }
 
 /* ---------- compare ---------- */
@@ -1019,6 +1114,7 @@ async function compare(aId, bId) {
 
 /* ---------- injuries ---------- */
 async function injuries(teamId) {
+  if (!LEAGUE.injuries) { view.innerHTML = `<div class="bar"><div><h1>Injury report</h1><h2>${LEAGUE.name}</h2></div></div><div class="panel"><div class="empty">ESPN doesn't publish a league-wide college injury feed. Team pages show availability where ESPN provides it.</div></div>`; return; }
   const [d, idx] = await Promise.all([getJSON(`${API}/injuries`, 300000), teamsIndex()]);
   const all = (d.injuries || []).flatMap(t => (t.injuries || []).map(i => ({ ...i, teamId: t.id, teamName: t.displayName })));
   const order = { 'Out': 0, 'Doubtful': 1, 'Questionable': 2, 'Injured Reserve': 3 };
@@ -1045,7 +1141,7 @@ async function news() {
 /* shared rating model: team table, ratings, played/remaining games, win probability */
 async function buildModel() {
   const [stnd, gamesAll] = await Promise.all([standingsL3(), seasonGames()]); const games = gamesAll.filter(ev => !ev._post);
-  const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => div.standings.entries.forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: v('wins'), l: v('losses'), t: v('ties'), pf: v('pointsFor'), pa: v('pointsAgainst') }; })));
+  const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => (div.standings?.entries || []).forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: v('wins'), l: v('losses'), t: v('ties'), pf: v('pointsFor'), pa: v('pointsAgainst') }; })));
   const ids = Object.keys(T); if (!ids.length) throw new Error('Standings unavailable.');
   ids.forEach(id => { const r = T[id], g = r.w + r.l + r.t; const pyth = (r.pf || r.pa) ? Math.pow(r.pf, 2.37) / (Math.pow(r.pf, 2.37) + Math.pow(r.pa, 2.37)) : .5; r.rating = (g ? (r.pf - r.pa) / g : 0) * 0.6 + (pyth - .5) * 24; r.played = g; });
   const played = [], remaining = [];
@@ -1056,6 +1152,7 @@ async function buildModel() {
   return { T, ids, played, remaining, pWin, games: gamesAll, stnd };
 }
 async function odds() {
+  if (!LEAGUE.odds) { view.innerHTML = `<div class="bar"><div><h1>Playoff odds</h1><h2>${LEAGUE.name}</h2></div></div><div class="panel"><div class="empty">Playoff odds are simulated for the NFL only. For college football, see the <a class="lnk" href="#playoffs">rankings and projected CFP bracket</a>.</div></div>`; return; }
   view.innerHTML = `<div class="bar"><div><h1>Playoff odds</h1><h2>Simulating the rest of the season…</h2></div></div><div class="prog" id="op"><i style="width:0"></i></div>`;
   const idx = await teamsIndex();
   if (!isCur()) { view.innerHTML = `<div class="bar"><div><h1>Playoff odds</h1><h2>${SEASON} season</h2></div></div><div class="panel"><div class="empty">Odds are simulated for the current season only. The ${SEASON} playoffs are history: see the <a class="lnk" href="#playoffs">playoff picture</a> for results.</div></div>`; return; }
@@ -1076,7 +1173,7 @@ async function odds() {
   } };
   for (let i = 0; i < N; i += 500) { run(i, i + 500); const b = document.querySelector('#op i'); if (b) b.style.width = ((i + 500) / N * 100) + '%'; await new Promise(r => setTimeout(r, 0)); }
   const rows = ids.map(id => ({ ...T[id], p: out[id].playoff / N, d: out[id].div / N, b: out[id].bye / N, xw: out[id].wins / N }));
-  try { const wkNow = (cache.get(`${API}/scoreboard`)?.v?.week?.number) || 0; const hist = store.get('oddsHist:' + SEASON, {}); hist[wkNow] = Object.fromEntries(rows.map(r => [r.id, Math.round(r.p * 1000) / 1000])); store.set('oddsHist:' + SEASON, hist); } catch {}
+  try { const wkNow = (cache.get(SB_URL())?.v?.week?.number) || 0; const hist = store.get(LK('oddsHist:' + SEASON), {}); hist[wkNow] = Object.fromEntries(rows.map(r => [r.id, Math.round(r.p * 1000) / 1000])); store.set(LK('oddsHist:' + SEASON), hist); } catch {}
   const pct = v => v >= .995 ? '>99%' : v <= .005 ? '<1%' : Math.round(v * 100) + '%';
   const cls = v => v >= .75 ? 'pos' : v <= .15 ? 'neg' : '';
   const confHTML = conf => { const r = rows.filter(x => x.conf === conf).sort((x, y) => y.p - x.p || y.d - x.d);
@@ -1105,14 +1202,15 @@ function fantasyFromBox(summary) {
 }
 const fpts = (r, sc) => r.passYd * sc.passYd + r.passTd * sc.passTd + r.int * sc.int + r.rushYd * sc.rushYd + r.rushTd * sc.rushTd + r.rec * sc.rec + r.recYd * sc.recYd + r.recTd * sc.recTd + r.fumL * sc.fumL + r.fg * sc.fg + r.xp * sc.xp;
 async function fantasy(scope = 'week', wk) {
+  if (!LEAGUE.fantasy) { view.innerHTML = `<div class="bar"><div><h1>Fantasy</h1><h2>${LEAGUE.name}</h2></div></div><div class="panel"><div class="empty">Fantasy scoring is set up for the NFL. Switch to NFL from the header to use it.</div></div>`; return; }
   const calF = await seasonCalendar(); const cw = isCur() ? Math.min(calF.cur || 1, calF.reg.length) : calF.reg.length;
   const w = Number(wk) || cw; const fmt = store.get('fformat', 'half');
   view.innerHTML = `<div class="bar"><div><h1>Fantasy</h1><h2>Loading box scores…</h2></div></div><div class="prog" id="fp"><i style="width:0"></i></div>`;
   const all = (await seasonGames()).filter(e => !e._post); const weeks = scope === 'season' ? [...new Set(all.map(e => e.week?.number).filter(Boolean))].filter(n => n <= cw) : [w];
   const evs = all.filter(e => weeks.includes(e.week?.number) && e.status?.type?.state !== 'pre');
   const totals = {}; let done = 0;
-  await Promise.all(evs.map(async ev => { try { let f = ev.status.type.completed ? store.get('fbox:' + ev.id, null) : null;
-      if (!f) { const sum = await getJSON(`${API}/summary?event=${ev.id}`, ev.status.type.completed ? 86400000 : 60000); f = fantasyFromBox(sum); if (ev.status.type.completed) store.set('fbox:' + ev.id, f); }
+  await Promise.all(evs.map(async ev => { try { let f = ev.status.type.completed ? store.get(LK('fbox:' + ev.id), null) : null;
+      if (!f) { const sum = await getJSON(`${API}/summary?event=${ev.id}`, ev.status.type.completed ? 86400000 : 60000); f = fantasyFromBox(sum); if (ev.status.type.completed) store.set(LK('fbox:' + ev.id), f); }
     Object.values(f).forEach(r => { const t = (totals[r.id] ||= { ...r, games: 0, passYd: 0, passTd: 0, int: 0, rushYd: 0, rushTd: 0, rec: 0, recYd: 0, recTd: 0, fumL: 0, fg: 0, xp: 0 }); ['passYd','passTd','int','rushYd','rushTd','rec','recYd','recTd','fumL','fg','xp'].forEach(k => t[k] += r[k]); t.games++; t.team = r.team; }); } catch {} done++; const b = document.querySelector('#fp i'); if (b) b.style.width = done / evs.length * 100 + '%'; }));
   const sc = FSCORE[fmt]; const rows = Object.values(totals).map(r => ({ ...r, pts: fpts(r, sc) })).filter(r => r.pts !== 0 || r.games);
   const posOf = r => r.pos || (r.passYd > 50 ? 'QB' : r.fg || r.xp ? 'K' : r.rec > r.rushYd / 10 ? 'WR' : 'RB');
@@ -1150,11 +1248,11 @@ const qbrNote = parts => `<p class="note" style="padding:0 16px 12px;margin:0">�
 /* ---------- player comparison (any player, any season) ---------- */
 // ESPN's search finds retired and past-season players that current rosters don't have
 async function searchAthletes(q, limit = 10) {
-  const list = rosterIndex || await allRosters().catch(() => []);
+  const list = rosterIndex || (isCFB() ? [] : await allRosters().catch(() => []));
   const local = list.filter(p => p.name.toLowerCase().includes(q)).slice(0, 6).map(p => ({ id: p.id, name: p.name, sub: `${p.pos} · ${p.team.abbreviation}`, hs: p.hs }));
   let remote = [];
   try { const d = await getJSON(`https://site.web.api.espn.com/apis/search/v2?query=${encodeURIComponent(q)}&limit=12`, 600000);
-    remote = (d.results || []).flatMap(r => r.contents || []).filter(c => /^s:20~l:28~a:\d+/.test(c.uid || '')).map(c => ({ id: c.uid.match(/a:(\d+)/)[1], name: c.displayName, sub: c.subtitle || c.description || 'NFL', hs: c.image?.default || '' })); } catch {}
+    remote = (d.results || []).flatMap(r => r.contents || []).filter(c => new RegExp('^s:20~l:' + LEAGUE.uidLeague + '~a:\\d+').test(c.uid || '')).map(c => ({ id: c.uid.match(/a:(\d+)/)[1], name: c.displayName, sub: c.subtitle || c.description || LEAGUE.name, hs: c.image?.default || '' })); } catch {}
   const seen = new Set(); return [...local, ...remote].filter(x => !seen.has(x.id) && seen.add(x.id)).slice(0, limit);
 }
 function parseSide(v) { const [id, yr] = String(v || '').split('-'); return { id: id || '', yr: Number(yr) || SEASON }; }
@@ -1249,6 +1347,7 @@ async function settings() {
   const installable = !!window.deferredInstall;
   view.innerHTML = `<div class="bar"><div><h1>Settings</h1><h2>Season, alerts and app install</h2></div></div>
     <div class="grid">
+      <div class="panel"><h3>League</h3><div class="box"><p class="muted" style="margin:0 0 10px">Favorites, caches and filters are kept separately for each league.</p><div class="chips">${Object.values(LEAGUES).map(l => `<button class="chip ${l === LEAGUE ? 'on' : ''}" data-league="${l.key}">${l.name}</button>`).join('')}</div></div></div>
       <div class="panel"><h3>Season</h3><div class="box"><p class="muted" style="margin:0 0 10px">Standings, leaders, team and player pages follow the selected season. Live scores and odds always use the current season.</p><select id="season">${seasons.map(y => `<option value="${y}" ${y === SEASON ? 'selected' : ''}>${y}${y === CUR_SEASON ? ' (current)' : ''}</option>`).join('')}</select></div></div>
       <div class="panel"><h3>Score alerts</h3><div class="box"><p class="muted" style="margin:0 0 10px">Get a browser notification when one of your teams scores or a game goes final. Works while this page is open.</p>
         <label class="row"><input type="checkbox" id="ntog" ${store.get('notify', false) ? 'checked' : ''} ${nperm === 'unsupported' ? 'disabled' : ''}> Browser notifications</label>
@@ -1261,6 +1360,7 @@ async function settings() {
       <div class="panel"><h3>Cache &amp; updates</h3><div class="box"><p class="muted" style="margin:0 0 10px">Running version <b class="num">${APP_VERSION}</b>. Rosters are cached for a day so Players and Leaders open instantly. If a new upload doesn't appear, force an update.</p><div class="row"><button class="chip" id="clr">Clear cached data</button><button class="chip on" id="upd">Force update</button></div></div></div>
     </div>`;
   document.getElementById('season').onchange = e => setSeason(Number(e.target.value));
+  view.querySelectorAll('[data-league]').forEach(b => b.onclick = () => setLeague(b.dataset.league));
   document.getElementById('lint').onchange = e => { store.set('liveInterval', Number(e.target.value)); toast('Live refresh: every ' + e.target.value + ' s'); };
   document.getElementById('stog').onchange = e => { store.set('sound', e.target.checked); if (e.target.checked) beep('score'); };
   document.getElementById('ntog').onchange = async e => { if (e.target.checked) { const p = await Notification.requestPermission(); if (p !== 'granted') { e.target.checked = false; toast('Notifications blocked'); return; } } store.set('notify', e.target.checked); toast(e.target.checked ? 'Alerts on' : 'Alerts off'); settings(); };
@@ -1269,7 +1369,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '8.2';
+const APP_VERSION = '9.0';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
@@ -1279,8 +1379,8 @@ async function forceUpdate() { try { const regs = await navigator.serviceWorker?
 /* ---------- home (5) ---------- */
 async function home() {
   if (!isCur()) { location.replace('#scores'); return scores(); }
-  const [sb, news_, stnd] = await Promise.all([getJSON(`${API}/scoreboard`, 30000), getJSON(`${API}/news?limit=12`, 300000).catch(() => ({ articles: [] })), getJSON(`${API2}/standings?season=${SEASON}`, 300000).catch(() => null)]);
-  await teamsIndex().catch(() => {}); watchScores(sb.events);
+  const [sb, news_, stnd] = await Promise.all([getJSON(SB_URL(), 30000), getJSON(`${API}/news?limit=12`, 300000).catch(() => ({ articles: [] })), standingsL3().catch(() => null)]);
+  await teamsIndex().catch(() => {}); watchScores(sb.events); noteColors(sb.events);
   const live = sb.events.filter(e => e.status.type.state === 'in');
   const featured = sb.events.find(favGame) || live[0] || sb.events.find(e => e.status.type.state === 'pre') || sb.events[0];
   const today = new Date().toDateString(); const todays = sb.events.filter(e => new Date(e.date).toDateString() === today);
@@ -1291,8 +1391,9 @@ async function home() {
   if (!perfEvents.length && (sb.week?.number || 1) > 1) { try { const prev = await getJSON(`${API}/scoreboard?seasontype=2&week=${sb.week.number - 1}&dates=${SEASON}`, 600000); perfEvents = (prev.events || []).filter(e => e.status.type.completed); perfLabel = `Week ${sb.week.number - 1} top performers`; } catch {} }
   const agg = {}; perfEvents.forEach(ev => (ev.competitions[0].leaders || []).forEach(cat => (cat.leaders || []).forEach(l => { const v = num(l.displayValue.match(/(\d+)\s*YDS/)?.[1] || l.value); const k = cat.name; (agg[k] ||= []).push({ ...l, v, ev, team: ev.competitions[0].competitors.find(c => c.team.id === l.team?.id)?.team }); })));
   const wl = Object.entries(agg).map(([k, arr]) => [k, arr.sort((a, b) => b.v - a.v).slice(0, 3)]);
-  const seeds = (stnd?.children || []).map(c => { const top = [...c.standings.entries].sort((x, y) => Number(x.stats.find(s => s.name === 'playoffSeed')?.value ?? 99) - Number(y.stats.find(s => s.name === 'playoffSeed')?.value ?? 99)).slice(0, 7); return `<div class="panel"><h3>${esc(c.abbreviation)} top 7</h3>${top.map((e, i) => `<a class="leader" style="grid-template-columns:24px 26px 1fr auto;padding:6px 12px" href="#team/${esc(e.team.id)}"><span class="rank num">${i + 1}</span><img src="${esc(logo(e.team))}" alt="" style="width:26px;height:26px;border-radius:0;object-fit:contain"><div class="nm">${esc(e.team.displayName)}</div><span class="num muted">${esc(e.stats.find(s => s.name === 'overall')?.displayValue || '')}</span></a>`).join('')}</div>`; }).join('');
-  view.innerHTML = `<div class="bar"><div><h1>Gridiron Desk</h1><h2>${SEASON} season · Week ${esc(sb.week?.number || '')} · ${live.length ? live.length + ' live now' : new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</h2></div><div class="row"><a class="chip" href="#scores">Scoreboard</a><a class="chip" href="#odds">Playoff odds</a></div></div>
+  let rk = null; if (isCFB()) { try { const rd = await getJSON(`${API}/rankings`, 300000); rk = (rd.rankings || []).find(p => /cfp|playoff/i.test(p.name)) || (rd.rankings || [])[0]; } catch {} }
+  const seeds = isCFB() ? (rk ? `<div class="panel"><h3>${esc(rk.shortName || rk.name)} top 10<a class="lnk" style="font-size:12px;letter-spacing:0;text-transform:none" href="#playoffs">Full rankings →</a></h3>${rk.ranks.slice(0, 10).map(r => `<a class="leader" style="grid-template-columns:24px 26px 1fr auto;padding:6px 12px" href="#team/${esc(r.team?.id)}"><span class="rank num">${esc(r.current)}</span><img src="${esc(r.team?.logo || '')}" alt="" style="width:26px;height:26px;border-radius:0;object-fit:contain"><div class="nm">${esc(r.team?.nickname ? (r.team.location ? r.team.location + ' ' + r.team.nickname : r.team.nickname) : r.team?.name)}</div><span class="num muted">${esc(r.recordSummary || '')}</span></a>`).join('')}</div>` : '') : (stnd?.children || []).map(c => { const top = [...(c.standings?.entries || c.children.flatMap(d => d.standings?.entries || []))].sort((x, y) => Number(x.stats.find(s => s.name === 'playoffSeed')?.value ?? 99) - Number(y.stats.find(s => s.name === 'playoffSeed')?.value ?? 99)).slice(0, 7); return `<div class="panel"><h3>${esc(c.abbreviation)} top 7</h3>${top.map((e, i) => `<a class="leader" style="grid-template-columns:24px 26px 1fr auto;padding:6px 12px" href="#team/${esc(e.team.id)}"><span class="rank num">${i + 1}</span><img src="${esc(logo(e.team))}" alt="" style="width:26px;height:26px;border-radius:0;object-fit:contain"><div class="nm">${esc(e.team.displayName)}</div><span class="num muted">${esc(e.stats.find(s => s.name === 'overall')?.displayValue || '')}</span></a>`).join('')}</div>`; }).join('');
+  view.innerHTML = `<div class="bar"><div><h1>${isCFB() ? 'College Football' : 'NFL'}</h1><h2>${SEASON} season · Week ${esc(sb.week?.number || '')} · ${live.length ? live.length + ' live now' : new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</h2></div><div class="row"><a class="chip" href="#scores">Scoreboard</a><a class="chip" href="${LEAGUE.odds ? '#odds' : '#playoffs'}">${LEAGUE.odds ? 'Playoff odds' : 'Rankings & CFP'}</a></div></div>
     ${myTeamsStrip(sb.events)}
     ${featured ? featuredCard(featured) : ''}
     <div class="two"><div class="stack">
@@ -1337,5 +1438,5 @@ document.addEventListener('keydown', e => {
 
 document.addEventListener('error', e => { const el = e.target; if (el?.tagName === 'IMG' && /headshots/.test(el.src) && !el.dataset.fb) { el.dataset.fb = 1; el.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="#2a3648"/><circle cx="32" cy="24" r="11" fill="#8793a6"/><path d="M10 58c3-13 12-19 22-19s19 6 22 19z" fill="#8793a6"/></svg>'); } }, true);
 ticker(); route();
-setInterval(() => { if (document.hidden) return; const live = [...document.querySelectorAll('#ticker .st.live')].length > 0; if (live || Date.now() % 60000 < LIVE_MS()) { cache.delete(`${API}/scoreboard`); ticker(); } }, LIVE_MS());
+setInterval(() => { if (document.hidden) return; const live = [...document.querySelectorAll('#ticker .st.live')].length > 0; if (live || Date.now() % 60000 < LIVE_MS()) { cache.delete(SB_URL()); ticker(); } }, LIVE_MS());
 })();
