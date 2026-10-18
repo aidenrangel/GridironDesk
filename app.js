@@ -1297,8 +1297,8 @@ async function compare(aId, bId) {
   const list = Object.values(idx).sort((a, b) => a.displayName.localeCompare(b.displayName));
   aId = aId || favs[0] || list[0].id; bId = bId || list.find(t => t.id !== aId).id;
   const sel = (id, which) => `<select id="${which}" aria-label="Team ${which}">${list.map(t => `<option value="${t.id}" ${t.id === id ? 'selected' : ''}>${esc(t.displayName)}</option>`).join('')}</select>`;
-  const stnd = await getJSON(`${API2}/standings?season=${SEASON}`, 300000);
-  const entry = id => (stnd.children || []).flatMap(c => c.standings.entries).find(e => e.team.id === String(id));
+  const stnd = await standingsL3();
+  const entry = id => (stnd.children || []).flatMap(c => (c.children || []).flatMap(d => d.standings?.entries || [])).find(e => e.team.id === String(id));
   const ea = entry(aId), eb = entry(bId);
   const [sa, sb, sta, stb] = await Promise.all([teamSchedule(aId), teamSchedule(bId), teamStats(aId), teamStats(bId)]);
   const summarize = (events, id) => { const g = events.map(ev => { const c = ev.competitions[0]; const me = c.competitors.find(x => x.team.id === String(id)), op = c.competitors.find(x => x.team.id !== String(id)); return { done: c.status?.type?.completed, me, op, ms: scoreOf(me), os: scoreOf(op), res: c.status?.type?.completed ? (me.winner ? 'W' : op.winner ? 'L' : 'T') : '', opId: op.team.id, ev }; }).filter(g => g.done);
@@ -1309,13 +1309,13 @@ async function compare(aId, bId) {
   const h2h = sa.filter(ev => ev.competitions[0].competitors.some(x => x.team.id === String(bId)));
   const common = [...A.opIds].filter(x => B.opIds.has(x) && x !== String(aId) && x !== String(bId));
   const rowsDef = [
-    ['Record', sv(ea,'overall'), sv(eb,'overall'), nv(ea,'winPercent'), nv(eb,'winPercent')],
+    ['Record', sv(ea,'overall'), sv(eb,'overall'), isCFB() ? (() => { const r = recOf(ea || { stats: [] }); return r.w + r.l ? r.w / (r.w + r.l) : 0; })() : nv(ea,'winPercent'), isCFB() ? (() => { const r = recOf(eb || { stats: [] }); return r.w + r.l ? r.w / (r.w + r.l) : 0; })() : nv(eb,'winPercent')],
     ['Points for / game', A.g.length ? (A.pf / A.g.length).toFixed(1) : '–', B.g.length ? (B.pf / B.g.length).toFixed(1) : '–', A.g.length ? A.pf / A.g.length : 0, B.g.length ? B.pf / B.g.length : 0],
     ['Points against / game', A.g.length ? (A.pa / A.g.length).toFixed(1) : '–', B.g.length ? (B.pa / B.g.length).toFixed(1) : '–', A.g.length ? -A.pa / A.g.length : 0, B.g.length ? -B.pa / B.g.length : 0],
     ['Point differential', sgn(A.pf - A.pa), sgn(B.pf - B.pa), A.pf - A.pa, B.pf - B.pa],
-    ['Home', sv(ea,'Home'), sv(eb,'Home'), 0, 0], ['Road', sv(ea,'Road'), sv(eb,'Road'), 0, 0],
-    ['vs. Division', sv(ea,'vs. Div.'), sv(eb,'vs. Div.'), 0, 0], ['vs. Conference', sv(ea,'vs. Conf.'), sv(eb,'vs. Conf.'), 0, 0],
-    ['Streak', sv(ea,'streak'), sv(eb,'streak'), 0, 0], ['Playoff seed', sv(ea,'playoffSeed'), sv(eb,'playoffSeed'), -nv(ea,'playoffSeed'), -nv(eb,'playoffSeed')],
+    ['Home', sv(ea,'Home'), sv(eb,'Home'), 0, 0], ['Road', sv(ea, isCFB() ? 'Away' : 'Road'), sv(eb, isCFB() ? 'Away' : 'Road'), 0, 0],
+    ...(isCFB() ? [['vs. Conference', sv(ea,'vs. Conf.'), sv(eb,'vs. Conf.'), 0, 0], ['vs. AP Top 25', sv(ea,'vs AP Top 25'), sv(eb,'vs AP Top 25'), 0, 0]] : [['vs. Division', sv(ea,'vs. Div.'), sv(eb,'vs. Div.'), 0, 0], ['vs. Conference', sv(ea,'vs. Conf.'), sv(eb,'vs. Conf.'), 0, 0]]),
+    ['Streak', sv(ea,'streak'), sv(eb,'streak'), 0, 0], ...(isCFB() ? [] : [['Playoff seed', sv(ea,'playoffSeed'), sv(eb,'playoffSeed'), -nv(ea,'playoffSeed'), -nv(eb,'playoffSeed')]]),
   ];
   if (sta && stb) [['Yards / game','passing.yardsPerGame'],['Pass yds / game','passing.passingYardsPerGame'],['Rush yds / game','rushing.rushingYardsPerGame'],['3rd down %','miscellaneous.thirdDownConvPct'],['Sacks (def)','defensive.sacks'],['Takeaways','miscellaneous.totalTakeaways'],['TO differential','miscellaneous.turnOverDifferential']].forEach(([l, k]) => { const x = sta[k], y = stb[k]; if (x && y) rowsDef.push([l, x.displayValue + (x.rank ? ` (${ord(x.rank)})` : ''), y.displayValue + (y.rank ? ` (${ord(y.rank)})` : ''), num(x.value), num(y.value)]); });
   const ta = idx[aId], tb = idx[bId];
@@ -2087,7 +2087,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '12.2';
+const APP_VERSION = '12.3';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
