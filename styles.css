@@ -814,3 +814,8 @@ table.stats td.num{font-size:13px}table.stats th{font-size:10.5px}
 .tw.scrolly{max-height:520px;overflow:auto}
 .tw.scrolly table.stats th{position:sticky;top:0;z-index:2;box-shadow:0 1px 0 var(--line)}
 .panel h3 input{font-family:var(--body);font-weight:400;letter-spacing:0;text-transform:none}
+
+/* coaches */
+.coach{display:flex;align-items:center;gap:12px;padding:var(--s3) var(--s4) 4px;color:var(--fg)}
+.coach img{width:56px;height:56px;border-radius:50%;object-fit:cover;background:var(--panel-2)}
+.coach b{font-family:var(--display);font-size:22px;display:block;line-height:1}.coach small{color:var(--muted);font-size:12px}

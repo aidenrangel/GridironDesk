@@ -42,6 +42,9 @@ Opening `index.html` directly from disk also works in Safari/Chrome; only the in
 ## Player stats (v13)
 - **Stats** replaces Leaders. NFL: full season tables (passing, rushing, receiving, defense, kicking, punting, returns) summed from every game's box score — every player, sortable columns, position/team/rookie filters, qualified toggle, per-game toggle, live games included. College: same tables from box scores, scoped to Top 25 games, Power 4, one conference, or all of FBS (slow first load).
 
+## Coaches (v14.2)
+- `#coaches`: every head coach with career W-L, win %, playoff/bowl record, years as a head coach, first season and age (from ESPN's coach feed), plus the live record this season. College has the same Top 25 / Power 4 / conference / All FBS scope picker. Team pages show a Head coach panel.
+
 ## Notes
 - Favorite teams, theme, season, fantasy format and the roster cache live in your browser's localStorage.
 - Playoff odds, the power index and fantasy points are computed in the page; they are not ESPN's numbers. The power index is an opponent-adjusted (SRS-style) rating in points: average margin (home field removed, capped at 28) plus average opponent rating, solved iteratively; FCS opponents count as −30 in college mode.
