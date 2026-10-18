@@ -1314,6 +1314,8 @@ async function team(id, tab = 'schedule') {
       ${(g.items || []).sort((a, b) => (a.position?.abbreviation || '').localeCompare(b.position?.abbreviation || '') || Number(a.jersey || 99) - Number(b.jersey || 99)).map(p => `<tr class="clk" data-p="${esc(p.id)}"><td class="num">${esc(p.jersey || '')}</td><td class="tm"><img src="${esc(hsOf(p))}" alt="" style="border-radius:50%" loading="lazy">${esc(p.displayName)}</td><td>${esc(p.position?.abbreviation || '')}</td><td>${esc(p.displayHeight || '')}</td><td>${esc(p.displayWeight || '')}</td><td class="num">${esc(p.age ?? '')}</td><td class="num">${p.experience?.years ? p.experience.years : 'R'}</td><td>${esc(p.college?.name || '')}</td><td>${p.injuries?.[0]?.status ? injTag(p.injuries[0].status) : ''}</td></tr>`).join('')}
     </tbody></table></div></div>`).join('');
   } else if (tab === 'dash') {
+    // the schedule feed has no quarter scores; the week scoreboards do
+    try { const byId = {}; (await seasonGames()).forEach(ev => byId[ev.id] = ev); played.forEach(g => { const sc = byId[g.ev.id]?.competitions?.[0]?.competitors || []; const me = sc.find(x => x.team.id === String(id)), op = sc.find(x => x.team.id !== String(id)); const ok = l => (l || []).length >= 2 && l.some(x => num(x.value ?? x.displayValue) > 0); if (ok(me?.linescores) && ok(op?.linescores)) { g.me.linescores = me.linescores; g.op.linescores = op.linescores; } }); } catch {}
     tt.innerHTML = teamDashHTML(String(id), games, played, stnd, await teamsIndex().catch(() => ({})));
   } else if (tab === 'moves') {
     tt.innerHTML = '<div class="panel"><div class="skel"></div></div>';
@@ -1467,7 +1469,7 @@ async function simSeason(M, N, onProgress) {
 function teamDashHTML(id, games, played, stnd, idx) {
   if (!played.length) return '<div class="panel"><div class="empty">The dashboard fills in after the first game.</div></div>';
   const ls = g => ({ me: (g.me.linescores || []).map(x => num(x.value ?? x.displayValue)), op: (g.op.linescores || []).map(x => num(x.value ?? x.displayValue)) });
-  const withLS = played.filter(g => (g.me.linescores || []).length >= 2);
+  const withLS = played.filter(g => (g.me.linescores || []).length >= 2 && (g.me.linescores.some(x => num(x.value ?? x.displayValue) > 0) || g.op.linescores?.some(x => num(x.value ?? x.displayValue) > 0)));
   // scoring by quarter
   const Q = [0, 0, 0, 0, 0], QO = [0, 0, 0, 0, 0];
   withLS.forEach(g => { const { me, op } = ls(g); me.forEach((v, i) => Q[Math.min(i, 4)] += v); op.forEach((v, i) => QO[Math.min(i, 4)] += v); });
@@ -2141,7 +2143,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '13.7';
+const APP_VERSION = '13.8';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
