@@ -807,3 +807,8 @@ table.stats .sp .rk{font-style:normal;background:var(--accent-soft);color:var(--
 table.stats .sp .dot{width:6px;height:6px;margin-left:4px;vertical-align:middle}
 table.stats td.num{font-size:13px}table.stats th{font-size:10.5px}
 @media (max-width:760px){table.stats .tm{min-width:170px}}
+
+/* scrollable long tables */
+.tw.scrolly{max-height:520px;overflow:auto}
+.tw.scrolly table.stats th{position:sticky;top:0;z-index:2;box-shadow:0 1px 0 var(--line)}
+.panel h3 input{font-family:var(--body);font-weight:400;letter-spacing:0;text-transform:none}
