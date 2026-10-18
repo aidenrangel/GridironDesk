@@ -80,7 +80,7 @@ async function teamsIndex() {
   if (teamIndex) return teamIndex;
   const idx = {};
   const sources = [
-    async () => { const d = await getJSON(`${API2}/standings?season=${SEASON}${LEAGUE.stQ}`, 300000); normStandings(d).children.forEach(c => c.children.forEach(div => (div.standings?.entries || []).forEach(e => idx[e.team.id] = { ...e.team, color: LEAGUE.key === 'nfl' ? COLORS[e.team.id] : learnedColors[e.team.id], conf: c.abbreviation, confName: c.name, div: div.name, stats: e.stats }))); },
+    async () => { const d = await standingsL3(); d.children.forEach(c => c.children.forEach(div => (div.standings?.entries || []).forEach(e => idx[e.team.id] = { ...e.team, color: LEAGUE.key === 'nfl' ? COLORS[e.team.id] : learnedColors[e.team.id], conf: c.abbreviation, confName: c.name, div: div.name, stats: e.stats }))); },
     async () => { const d = await getJSON(`${API}/teams?${LEAGUE.teamsQ}`, 3600000); (d.sports?.[0]?.leagues?.[0]?.teams || []).forEach(x => { idx[x.team.id] = { ...(idx[x.team.id] || {}), ...x.team }; if (x.team.color) learnedColors[x.team.id] = x.team.color; }); store.set(LK('teamColors'), learnedColors); },
     async () => { const d = await getJSON(SB_URL(), 30000); noteColors(d.events); d.events.forEach(ev => ev.competitions[0].competitors.forEach(c => { if (!idx[c.team.id]) idx[c.team.id] = c.team; })); }
   ];
@@ -91,7 +91,25 @@ async function teamsIndex() {
 }
 // normalize: every conference gets a `children` list of divisions; conferences without divisions become one division named after themselves
 function normStandings(d) { return { ...d, children: (d?.children || []).map(c => ({ ...c, children: (c.children && c.children.length) ? c.children : [{ name: c.name, abbreviation: c.abbreviation, standings: c.standings }] })) }; }
-async function standingsL3() { return normStandings(await getJSON(`${API2}/standings?season=${SEASON}${LEAGUE.stQ}`, 300000)); }
+/* Records computed from the scoreboard the moment a game goes final (ESPN's standings feed lags by minutes). */
+let recCache = null;
+async function computedRecords() {
+  if (!isCur()) return {}; const key = LEAGUE.key + ':' + SEASON; if (recCache?.key === key && Date.now() - recCache.t < 20000) return recCache.v;
+  const out = {}; try { const games = (await seasonGames(false)).filter(ev => ev.competitions[0].status?.type?.completed).sort((a, b) => new Date(a.date) - new Date(b.date));
+    games.forEach(ev => { const c = ev.competitions[0], [a, h] = byHome(c); const as = scoreOf(a), hs = scoreOf(h);
+      [[a, as, hs], [h, hs, as]].forEach(([t, ms, os]) => { const r = (out[t.team.id] ||= { w: 0, l: 0, t: 0, g: 0, pf: 0, pa: 0, home: [0, 0, 0], away: [0, 0, 0], last: [] }); const res = ms > os ? 0 : ms < os ? 1 : 2; r.g++; r.pf += ms; r.pa += os; if (res === 0) r.w++; else if (res === 1) r.l++; else r.t++; r[t.homeAway === 'home' ? 'home' : 'away'][res]++; r.last.push('WLT'[res]); }); });
+    Object.values(out).forEach(r => { const z = r.last[r.last.length - 1]; let n = 0; for (let i = r.last.length - 1; i >= 0 && r.last[i] === z; i--) n++; r.streak = z ? z + n : ''; r.overall = `${r.w}-${r.l}${r.t ? '-' + r.t : ''}`; });
+  } catch {} recCache = { key, t: Date.now(), v: out }; return out;
+}
+function overlayRecords(d, rec) {
+  const setStat = (e, name, value, displayValue) => { let st = e.stats.find(s => s.name === name); if (!st) { st = { name }; e.stats.push(st); } st.value = value; st.displayValue = displayValue ?? String(value); };
+  (d.children || []).forEach(c => (c.children || []).forEach(div => (div.standings?.entries || []).forEach(e => { const r = rec[e.team.id]; if (!r) return; const fg = recOf(e); if (r.g <= fg.w + fg.l + fg.t) return;
+    setStat(e, 'wins', r.w); setStat(e, 'losses', r.l); setStat(e, 'ties', r.t); setStat(e, 'overall', 0, r.overall); setStat(e, 'winPercent', r.g ? (r.w + r.t / 2) / r.g : 0, (r.g ? (r.w + r.t / 2) / r.g : 0).toFixed(3));
+    setStat(e, 'pointsFor', r.pf); setStat(e, 'pointsAgainst', r.pa); setStat(e, isCFB() ? 'pointDifferential' : 'differential', r.pf - r.pa, sgn(r.pf - r.pa)); setStat(e, 'streak', 0, r.streak);
+    const hv = r.home, av = r.away; setStat(e, 'Home', 0, `${hv[0]}-${hv[1]}${hv[2] ? '-' + hv[2] : ''}`); setStat(e, isCFB() ? 'Away' : 'Road', 0, `${av[0]}-${av[1]}${av[2] ? '-' + av[2] : ''}`); e._live = true; })));
+  return d;
+}
+async function standingsL3() { const [d, rec] = await Promise.all([getJSON(`${API2}/standings?season=${SEASON}${LEAGUE.stQ}`, 120000), computedRecords()]); return overlayRecords(normStandings(d), rec); }
 const P4 = [['SEC', /southeastern|^sec$/i], ['Big Ten', /big ten|^b1g$|^big10$/i], ['Big 12', /big 12|^big12$/i], ['ACC', /atlantic coast|^acc$/i]];
 const p4Index = c => P4.findIndex(([, re]) => re.test(c?.name || '') || re.test(c?.abbreviation || ''));
 const confOrder = (a, b) => { const ia = p4Index(a), ib = p4Index(b); if (ia >= 0 || ib >= 0) return (ia < 0 ? 9 : ia) - (ib < 0 ? 9 : ib); if (/independ/i.test(a.name) !== /independ/i.test(b.name)) return /independ/i.test(a.name) ? 1 : -1; return (a.name || '').localeCompare(b.name || ''); };
@@ -368,7 +386,7 @@ async function scores(week) {
   const key = allW.some(x => x.key === String(week)) ? String(week) : liveKey;
   const wobj = allW.find(x => x.key === key) || allW[0]; const wi = allW.indexOf(wobj);
   const sb = (base && key === liveKey) ? base : await getJSON(`${API}/scoreboard?seasontype=${wobj.type}&week=${wobj.n}&dates=${SEASON}${LEAGUE.sbQ}`, isCur() ? 30000 : 600000);
-  if (isCur()) watchScores(sb.events); noteColors(sb.events);
+  if (isCur()) { watchScores(sb.events); await computedRecords().catch(() => {}); } noteColors(sb.events);
   // college: filter chips (Top 25 / conference / my teams)
   const sbFilter = store.get(LK('sbFilter'), isCFB() ? 'top25' : 'all');
   const rankOf = c => num(c.curatedRank?.current) || 99;
@@ -413,10 +431,11 @@ function featuredCard(ev) {
     <div class="sub"><span>${pre ? 'Next up' : live ? 'Live now' : 'Final'}${c.venue?.fullName ? ' · ' + esc(c.venue.fullName) : ''}</span><span>${esc(bc)}${pre && odds?.overUnder ? ' · O/U ' + esc(odds.overUnder) : ''}</span></div></a>`;
 }
 function gameCard(ev) {
-  const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c);
+  const c = ev.competitions[0], st = ev.status.type, [a, h] = byHome(c); const cr = recCache?.v || {};
+  const recStr = t => { const r = cr[t.team.id]; const m = String(t.records?.[0]?.summary || '').match(/^(\d+)-(\d+)(?:-(\d+))?/); return r && m && r.g > num(m[1]) + num(m[2]) + num(m[3] || 0) ? r.overall : (t.records?.[0]?.summary || ''); };
   const done = st.completed, live = st.state === 'in', pre = st.state === 'pre';
   const possId = c.situation?.possession;
-  const row = t => `<div class="team ${done ? (t.winner ? 'w' : 'l') : ''}"><img src="${esc(t.team.logo)}" alt="">${rankBadge(t)}<b>${esc(t.team.displayName)}</b><small>${esc(t.records?.[0]?.summary || '')}</small>${live && possId === t.id ? '<span class="poss" title="Possession"></span>' : ''}</div>
+  const row = t => `<div class="team ${done ? (t.winner ? 'w' : 'l') : ''}"><img src="${esc(t.team.logo)}" alt="">${rankBadge(t)}<b>${esc(t.team.displayName)}</b><small>${esc(recStr(t))}</small>${live && possId === t.id ? '<span class="poss" title="Possession"></span>' : ''}</div>
     <div class="score ${done && !t.winner ? 'lost' : ''}">${pre ? '' : esc(t.score)}</div>`;
   const bc = c.broadcasts?.[0]?.names?.join('/') || c.broadcast || '';
   const odds = c.odds?.[0];
@@ -1251,7 +1270,8 @@ async function team(id, tab = 'schedule') {
   const stnd = cache.get(`${API2}/standings?season=${SEASON}&level=3`)?.v || null;
   const inj = cache.get(`${API}/injuries`)?.v || null;
   if ((!stnd || !inj) && !team.warmed) { team.warmed = true; Promise.all([standingsL3().catch(() => null), getJSON(`${API}/injuries`, 300000).catch(() => null)]).then(() => { if (location.hash.startsWith(`#team/${id}`)) team(id, (location.hash.split('/')[2]) || tab).catch(() => {}); }); }
-  const rec = t.record?.items?.find(r => r.type === 'total') || t.record?.items?.[0];
+  let rec = t.record?.items?.find(r => r.type === 'total') || t.record?.items?.[0];
+  try { const cr = (await computedRecords())[String(id)]; if (cr && (!rec || cr.g > recOf({ stats: rec.stats || [] }).w + recOf({ stats: rec.stats || [] }).l + recOf({ stats: rec.stats || [] }).t)) rec = { ...(rec || {}), summary: cr.overall, stats: [...(rec?.stats || []).filter(s => s.name !== 'streak'), { name: 'streak', displayValue: cr.streak }] }; } catch {}
   const rs = n => rec?.stats?.find(s => s.name === n)?.displayValue ?? '–';
   const games = (sd.events || []).map(ev => {
     const c = ev.competitions[0];
@@ -1689,6 +1709,12 @@ const RECORDS = {
   nfl: [['passingYards', 5477, 'Peyton Manning, 2013', [4000, 5000]], ['passingTouchdowns', 55, 'Peyton Manning, 2013', [30, 40, 50]], ['completions', 485, 'Tom Brady, 2021', [400, 450]], ['rushingYards', 2105, 'Eric Dickerson, 1984', [1000, 1500, 2000]], ['rushingTouchdowns', 28, 'LaDainian Tomlinson, 2006', [10, 15, 20]], ['receptions', 149, 'Cooper Kupp, 2021', [80, 100, 120]], ['receivingYards', 1964, 'Calvin Johnson, 2012', [1000, 1500]], ['receivingTouchdowns', 23, 'Randy Moss, 2007', [10, 15, 20]], ['sacks', 22.5, 'Michael Strahan, 2001 · T.J. Watt, 2021', [10, 15, 20]], ['interceptions', 14, 'Dick "Night Train" Lane, 1952', [5, 8, 10]]],
   cfb: [['passingYards', 5833, 'B.J. Symons, Texas Tech, 2003', [3000, 4000, 5000]], ['passingTouchdowns', 60, 'Joe Burrow, LSU, 2019', [30, 40, 50]], ['rushingYards', 2628, 'Barry Sanders, Oklahoma State, 1988', [1000, 1500, 2000]], ['rushingTouchdowns', 37, 'Barry Sanders, Oklahoma State, 1988', [15, 20, 30]], ['receptions', 155, 'Freddie Barnes, Bowling Green, 2009', [80, 100, 120]], ['receivingYards', 2060, 'Trevor Insley, Nevada, 1999', [1000, 1500]], ['receivingTouchdowns', 27, 'Troy Edwards, Louisiana Tech, 1998', [10, 15, 20]], ['sacks', 24, 'Terrell Suggs, Arizona State, 2002', [10, 15, 20]], ['interceptions', 14, 'Al Worley, Washington, 1968', [5, 8, 10]]]
 };
+/* NFL leaders built from the live box-score totals (same source as the Stats page), shaped like ESPN's leaders feed */
+async function statsAsLeaders(onProgress) {
+  const [data, idx] = await Promise.all([seasonStats(onProgress), teamsIndex()]); const roster = await allRosters().catch(() => []); const byId = {}; roster.forEach(p => byId[p.id] = p);
+  const defs = [['passingYards', 'Passing Yards', r => r.pa?.[2]], ['passingTouchdowns', 'Passing Touchdowns', r => r.pa?.[3]], ['completions', 'Completions', r => r.pa?.[0]], ['rushingYards', 'Rushing Yards', r => r.ru?.[1]], ['rushingTouchdowns', 'Rushing Touchdowns', r => r.ru?.[2]], ['receptions', 'Receptions', r => r.re?.[1]], ['receivingYards', 'Receiving Yards', r => r.re?.[2]], ['receivingTouchdowns', 'Receiving Touchdowns', r => r.re?.[3]], ['sacks', 'Sacks', r => r.de?.[2]], ['interceptions', 'Interceptions', r => r.in?.[0]]];
+  return defs.map(([name, displayName, f]) => ({ name, displayName, leaders: data.rows.map(r => ({ r, v: f(r) || 0 })).filter(x => x.v > 0).sort((a, b) => b.v - a.v).slice(0, 60).map(({ r, v }) => { const rp = byId[r.id]; const team = idx[rp?.team?.id || r.tid] || { id: r.tid, abbreviation: '' }; return { value: v, displayValue: /\./.test(String(v)) ? v.toFixed(1) : String(v), athlete: { id: r.id, displayName: r.name, headshot: { href: rp?.hs || hsOf({ id: r.id }) }, position: { abbreviation: rp?.pos || r.pos || guessPos(r) } }, team, live: r.live }; }) }));
+}
 /* Power 4 single-season conference records (StatMuse / conference record books; sacks before 2000 are from conference books) */
 const CONF_RECORDS = {
   sec: { name: 'SEC', passingYards: [5671, 'Joe Burrow, LSU, 2019'], passingTouchdowns: [60, 'Joe Burrow, LSU, 2019'], rushingYards: [2219, 'Derrick Henry, Alabama, 2015'], rushingTouchdowns: [28, 'Derrick Henry, Alabama, 2015'], receptions: [124, 'Amari Cooper, Alabama, 2014'], receivingYards: [1856, 'DeVonta Smith, Alabama, 2020'], receivingTouchdowns: [23, 'DeVonta Smith, Alabama, 2020'], sacks: [27, 'Derrick Thomas, Alabama, 1988'], interceptions: [12, 'Terry Hoage, Georgia, 1982'] },
@@ -1699,7 +1725,7 @@ const CONF_RECORDS = {
 const CONF_KEYS = ['sec', 'b1g', 'b12', 'acc']; // same order as P4
 async function records(conf) {
   view.innerHTML = `<div class="bar"><div><h1>Records watch</h1><h2>Loading leaders…</h2></div></div><div class="prog" id="lp"><i style="width:0"></i></div>`;
-  let [cats, idx] = await Promise.all([fullLeaders(p => { const b = document.querySelector('#lp i'); if (b) b.style.width = p * 100 + '%'; }), teamsIndex()]);
+  let [cats, idx] = await Promise.all([isCFB() ? fullLeaders(p => { const b = document.querySelector('#lp i'); if (b) b.style.width = p * 100 + '%'; }) : statsAsLeaders(p => { const b = document.querySelector('#lp i'); if (b) b.style.width = p * 100 + '%'; }), teamsIndex()]);
   const ck = isCFB() && CONF_KEYS.includes(conf) ? conf : ''; const CR = ck ? CONF_RECORDS[ck] : null;
   if (ck) { const h2 = document.querySelector('.bar h2'); if (h2) h2.textContent = `Loading the ESPN top 50 for ${CR.name} players…`; cats = await Promise.all(cats.map(c => c.expandable && !c.expanded ? expandCategory(c).catch(() => c) : c)); }
   const confOf = tid => { const t = idx[tid]; const i = t ? p4Index({ name: t.confName || t.conf, abbreviation: t.conf }) : -1; return i >= 0 ? CONF_KEYS[i] : ''; };
@@ -1710,7 +1736,7 @@ async function records(conf) {
     const rows = pool.slice(0, 40).map(l => { const gp = gpOf(l.team?.id) || Math.max(1, calF?.cur ? calF.cur - 1 : 1); const pace = l.value / gp * total; return { l, gp, pace, pct: pace / rec, t: idx[l.team?.id] || l.team }; }).sort((a, b) => b.pace - a.pace).slice(0, 6);
     const dec = /\./.test(String(rec));
     return `<div class="panel"><h3>${esc(c.displayName)}<span class="pill">${CR ? CR.name + ' ' : ''}record ${rec} · ${esc(who)}${natRec ? ` · <span class="muted">FBS ${natRec}</span>` : ''}</span></h3>${rows.map((r, i) => { const mile = [...ms].reverse().find(m => r.pace >= m); const cls = r.pct >= 1 ? 'rec' : r.pct >= .9 ? 'near' : ''; return `<a class="rw ${cls}" href="#player/${esc(r.l.athlete.id)}" style="--tc:${colorOf(r.t)}"><span class="r">${i + 1}</span><img src="${esc(hsOf(r.l.athlete))}" alt="" loading="lazy"><div><b>${esc(r.l.athlete.displayName)}</b><small>${esc(r.l.athlete.position?.abbreviation || '')} · ${esc(r.t?.abbreviation || '')} · ${esc(r.l.displayValue)} through ${r.gp} game${r.gp === 1 ? '' : 's'}</small><div class="rbar"><i style="width:${Math.min(100, r.pct * 100)}%"></i><em style="left:${Math.min(100, Math.max(0, r.l.value / rec * 100))}%"></em></div></div><span class="v">${dec ? r.pace.toFixed(1) : Math.round(r.pace)}<small>on pace</small>${r.pct >= 1 ? '<small class="livetag">record pace</small>' : mile ? `<small class="mile">${mile.toLocaleString()}+ pace</small>` : ''}</span></a>`; }).join('')}</div>`; }).filter(Boolean);
-  view.innerHTML = `<div class="bar"><div><h1>Records watch</h1><h2>Who's on pace for ${CR ? CR.name : LEAGUE.key === 'nfl' ? 'NFL' : 'FBS'} single-season records and milestones · ${total}-game pace</h2></div>${isCFB() ? `<div class="chips"><a class="chip ${!ck ? 'on' : ''}" href="#records">FBS</a>${CONF_KEYS.map(k => `<a class="chip ${ck === k ? 'on' : ''}" href="#records/${k}">${CONF_RECORDS[k].name}</a>`).join('')}</div>` : ''}</div><div class="grid">${blocks.join('')}</div>
+  view.innerHTML = `<div class="bar"><div><h1>Records watch</h1><h2>Who's on pace for ${CR ? CR.name : LEAGUE.key === 'nfl' ? 'NFL' : 'FBS'} single-season records and milestones · ${total}-game pace${LEAGUE.key === 'nfl' ? ' · totals from box scores, live' : ''}</h2></div>${isCFB() ? `<div class="chips"><a class="chip ${!ck ? 'on' : ''}" href="#records">FBS</a>${CONF_KEYS.map(k => `<a class="chip ${ck === k ? 'on' : ''}" href="#records/${k}">${CONF_RECORDS[k].name}</a>`).join('')}</div>` : ''}</div><div class="grid">${blocks.join('')}</div>
     <p class="note">Pace = current total ÷ the team's games played × ${total}. The bar shows progress toward the ${CR ? CR.name + ' conference' : ''} record; the tick marks where the player is right now. ${CR ? 'Conference records include bowl games (StatMuse / conference record books); sacks before 2000 come from conference books, so Derrick Thomas\'s 27 and Peter Boulware\'s 19 predate the official NCAA stat.' : (LEAGUE.key === 'nfl' ? 'NFL' : 'FBS') + ' single-season records as of 2025.'}${ck ? ' Conference view uses ESPN\'s top 50 per category, so a player outside the national top 50 won\'t appear.' : ''}</p>`;
 }
 
@@ -2153,7 +2179,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '13.9';
+const APP_VERSION = '14.0';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
