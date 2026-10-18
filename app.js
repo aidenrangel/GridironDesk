@@ -220,7 +220,7 @@ function lineChart(series, labels, { h = 150, w = 520 } = {}) {
   const mx = Math.max(...all) * 1.1 || 1, mn = 0;
   const x = i => pad.l + i * (w - pad.l - pad.r) / (n - 1), y = v => pad.t + (h - pad.t - pad.b) * (1 - (v - mn) / (mx - mn));
   const ticks = 4; const grid = Array.from({ length: ticks + 1 }, (_, i) => { const v = mn + (mx - mn) * i / ticks; return `<line x1="${pad.l}" x2="${w - pad.r}" y1="${y(v)}" y2="${y(v)}"/><text x="${pad.l - 4}" y="${y(v) + 3}" text-anchor="end">${Math.round(v)}</text>`; }).join('');
-  const paths = series.map(s => { const pts = s.v.map((v, i) => v == null ? null : `${x(i)},${y(v)}`).filter(Boolean); return `<path class="${s.cls}" d="M${pts.join('L')}"/>` + (s.area ? `<path class="aA" d="M${pts[0]}L${pts.join('L')}L${x(s.v.length - 1)},${y(0)}L${x(0)},${y(0)}Z"/>` : '') + s.v.map((v, i) => v == null ? '' : `<circle cx="${x(i)}" cy="${y(v)}" r="2.5" fill="currentColor" style="color:var(--${s.cls === 'lA' ? 'accent' : 'loss'})"/>`).join(''); }).join('');
+  const paths = series.map(s => { const pts = s.v.map((v, i) => v == null ? null : `${x(i)},${y(v)}`).filter(Boolean); return `<path class="${s.cls}" d="M${pts.join('L')}"/>` + (s.area ? `<path class="aA" d="M${pts[0]}L${pts.join('L')}L${x(s.v.length - 1)},${y(0)}L${x(0)},${y(0)}Z"/>` : '') + s.v.map((v, i) => v == null ? '' : `<circle cx="${x(i)}" cy="${y(v)}" r="2.5" fill="currentColor" style="color:var(--${s.cls === 'lA' ? 'accent' : s.cls === 'lC' ? 'gold' : 'loss'})"/>`).join(''); }).join('');
   const xl = labels.map((l, i) => `<text x="${x(i)}" y="${h - 6}" text-anchor="middle">${esc(l)}</text>`).join('');
   return `<svg viewBox="0 0 ${w} ${h}"><g class="grid">${grid}</g>${paths}${xl}</svg>`;
 }
@@ -1554,15 +1554,25 @@ function fantasyFromLog(names, stats) { let p = 0, any = false; names.forEach((n
 async function usageForGame(evId, teamId) { const ev = (await seasonGames()).find(e => e.id === String(evId)) || { id: evId, status: { type: { completed: true } } }; return (await gameLines(ev)).u[teamId] || null; }
 async function usageHTML(id, teamId, rows) {
   const done = rows.filter(r => r.id).slice(-17); if (!done.length) return '';
-  const per = await Promise.all(done.map(async r => { try { const u = await usageForGame(r.id, teamId); const me = u?.p?.[String(id)]; return me ? { r, tg: me[0], car: me[1], rec: me[2], yds: me[3], ttg: u.tg, tcar: u.car } : null; } catch { return null; } }));
+  const per = await Promise.all(done.map(async r => { try { const u = await usageForGame(r.id, teamId); const me = u?.p?.[String(id)]; return me ? { r, tg: me[0], car: me[1], rec: me[2], yds: me[3], ry: me[4] || 0, ttg: u.tg, tcar: u.car, trec: u.rec || 0, try: u.ry || 0 } : null; } catch { return null; } }));
   const rowsU = per.filter(Boolean); if (!rowsU.length) return '';
-  const tgs = rowsU.map(x => x.ttg ? x.tg / x.ttg * 100 : 0), cars = rowsU.map(x => x.tcar ? x.car / x.tcar * 100 : 0);
-  const sum = k => rowsU.reduce((n, x) => n + x[k], 0); const tShare = sum('ttg') ? sum('tg') / sum('ttg') * 100 : 0, cShare = sum('tcar') ? sum('car') / sum('tcar') * 100 : 0;
-  const showT = sum('tg') > 0, showC = sum('car') > 0;
-  return `<div class="panel"><h3>Usage<span class="pill">share of team targets &amp; carries</span></h3>
-    <div class="kpis">${showT ? `<div class="kpi"><small>Target share</small><b>${tShare.toFixed(1)}%</b></div><div class="kpi"><small>Targets / game</small><b>${(sum('tg') / rowsU.length).toFixed(1)}</b></div>` : ''}${showC ? `<div class="kpi"><small>Carry share</small><b>${cShare.toFixed(1)}%</b></div><div class="kpi"><small>Carries / game</small><b>${(sum('car') / rowsU.length).toFixed(1)}</b></div>` : ''}<div class="kpi"><small>Touches / game</small><b>${((sum('rec') + sum('car')) / rowsU.length).toFixed(1)}</b></div></div>
-    <div class="chart">${lineChart([...(showT ? [{ v: tgs, cls: 'lA', area: true }] : []), ...(showC ? [{ v: cars, cls: 'lB' }] : [])], rowsU.map(x => 'W' + x.r.week))}</div><div class="legend">${showT ? '<span><i></i>Target share %</span>' : ''}${showC ? '<span><i class="b"></i>Carry share %</span>' : ''}</div>
-    <div class="tw"><table><thead><tr><th>Wk</th><th>Opp</th>${showT ? '<th class="num">Tgt</th><th class="num">Team</th><th class="num">Share</th>' : ''}${showC ? '<th class="num">Car</th><th class="num">Team</th><th class="num">Share</th>' : ''}<th class="num">Touches</th></tr></thead><tbody>${rowsU.map(x => `<tr class="clk" data-g="${esc(x.r.id)}"><td class="num">${esc(x.r.week)}</td><td class="tm"><img src="${esc(x.r.opponent?.logo)}" alt="">${esc(x.r.atVs)} ${esc(x.r.opponent?.abbreviation)}</td>${showT ? `<td class="num">${x.tg}</td><td class="num muted">${x.ttg}</td><td class="num"><b>${x.ttg ? (x.tg / x.ttg * 100).toFixed(0) + '%' : '–'}</b></td>` : ''}${showC ? `<td class="num">${x.car}</td><td class="num muted">${x.tcar}</td><td class="num"><b>${x.tcar ? (x.car / x.tcar * 100).toFixed(0) + '%' : '–'}</b></td>` : ''}<td class="num">${x.rec + x.car}</td></tr>`).join('')}</tbody></table></div></div>`;
+  const sum = k => rowsU.reduce((n, x) => n + x[k], 0); const n = rowsU.length;
+  const hasTg = sum('ttg') > 0, hasRec = sum('rec') > 0, showC = sum('car') >= Math.max(5, n) || (sum('tcar') && sum('car') / sum('tcar') >= .1);
+  if (!hasRec && !showC) return '';
+  const share = (a, b) => b ? a / b * 100 : 0;
+  // receiving block: target share when ESPN lists targets (NFL); reception + yards share otherwise (college)
+  const recSeries = hasTg ? rowsU.map(x => share(x.tg, x.ttg)) : rowsU.map(x => share(x.rec, x.trec)), ydsSeries = rowsU.map(x => share(x.ry, x.try));
+  const carSeries = rowsU.map(x => share(x.car, x.tcar));
+  const kpis = [...(hasRec ? (hasTg ? [['Target share', share(sum('tg'), sum('ttg')).toFixed(1) + '%'], ['Targets / game', (sum('tg') / n).toFixed(1)]] : [['Reception share', share(sum('rec'), sum('trec')).toFixed(1) + '%'], ['Rec. yards share', share(sum('ry'), sum('try')).toFixed(1) + '%']]) : []), ...(hasRec ? [['Catches / game', (sum('rec') / n).toFixed(1)]] : []), ...(showC ? [['Carry share', share(sum('car'), sum('tcar')).toFixed(1) + '%'], ['Carries / game', (sum('car') / n).toFixed(1)]] : []), ['Touches / game', ((sum('rec') + sum('car')) / n).toFixed(1)]];
+  const series = [...(hasRec ? [{ v: recSeries, cls: 'lA', area: true }] : []), ...(hasRec && !hasTg ? [{ v: ydsSeries, cls: 'lC' }] : []), ...(showC ? [{ v: carSeries, cls: 'lB' }] : [])];
+  const legend = [...(hasRec ? [`<span><i></i>${hasTg ? 'Target' : 'Reception'} share %</span>`] : []), ...(hasRec && !hasTg ? ['<span><i class="c"></i>Rec. yards share %</span>'] : []), ...(showC ? ['<span><i class="b"></i>Carry share %</span>'] : [])];
+  const head = `<th>Wk</th><th>Opp</th>${hasRec ? (hasTg ? '<th class="num">Tgt</th><th class="num">Team</th><th class="num">Share</th>' : '<th class="num">Rec</th><th class="num">Team</th><th class="num">Share</th><th class="num">Yds</th><th class="num">Team</th><th class="num">Share</th>') : ''}${showC ? '<th class="num">Car</th><th class="num">Team</th><th class="num">Share</th>' : ''}<th class="num">Touches</th>`;
+  const pct = (a, b) => b ? Math.round(share(a, b)) + '%' : '–';
+  return `<div class="panel"><h3>Usage<span class="pill">${hasTg ? 'share of team targets' : 'share of team catches'}${showC ? ' & carries' : ''}</span></h3>
+    <div class="kpis">${kpis.map(([l, v]) => `<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join('')}</div>
+    <div class="chart">${lineChart(series, rowsU.map(x => 'W' + x.r.week))}</div><div class="legend">${legend.join('')}</div>
+    <div class="tw"><table><thead><tr>${head}</tr></thead><tbody>${rowsU.map(x => `<tr class="clk" data-g="${esc(x.r.id)}"><td class="num">${esc(x.r.week)}</td><td class="tm"><img src="${esc(x.r.opponent?.logo)}" alt="">${esc(x.r.atVs)} ${esc(x.r.opponent?.abbreviation)}</td>${hasRec ? (hasTg ? `<td class="num">${x.tg}</td><td class="num muted">${x.ttg}</td><td class="num"><b>${pct(x.tg, x.ttg)}</b></td>` : `<td class="num">${x.rec}</td><td class="num muted">${x.trec}</td><td class="num"><b>${pct(x.rec, x.trec)}</b></td><td class="num">${x.ry}</td><td class="num muted">${x.try}</td><td class="num"><b>${pct(x.ry, x.try)}</b></td>`) : ''}${showC ? `<td class="num">${x.car}</td><td class="num muted">${x.tcar}</td><td class="num"><b>${pct(x.car, x.tcar)}</b></td>` : ''}<td class="num">${x.rec + x.car}</td></tr>`).join('')}</tbody></table></div>
+    ${!hasTg && hasRec ? '<p class="note" style="padding:0 14px 10px;margin:0">ESPN\'s college box scores don\'t list targets, so share of the team\'s catches and receiving yards is shown instead.</p>' : ''}</div>`;
 }
 
 /* ---------- 13 · draft classes & rookies ---------- */
@@ -1945,11 +1955,11 @@ function importSettings(txt) { const j = JSON.parse(txt); if (j?.app !== 'gridir
 
 /* ---------- 19 · one summary fetch per game, shared by fantasy / awards / usage ---------- */
 async function gameLines(ev) {
-  const key = LK('gl3:' + ev.id); const done = ev.status?.type?.completed; let c = done ? store.get(key, null) : null; if (c) return c;
+  const key = LK('gl4:' + ev.id); const done = ev.status?.type?.completed; let c = done ? store.get(key, null) : null; if (c) return c;
   const s = await getJSON(`${API}/summary?event=${ev.id}`, done ? 86400000 : 60000);
-  const usage = {}; (s.boxscore?.players || []).forEach(side => { const t = { tg: 0, car: 0, p: {} }; const rec = side.statistics.find(x => x.name === 'receiving'), ru = side.statistics.find(x => x.name === 'rushing'); const ti = rec?.labels.indexOf('TGTS') ?? -1, ri = rec?.labels.indexOf('REC') ?? -1, ryi = rec?.labels.indexOf('YDS') ?? -1, ci = ru?.labels.indexOf('CAR') ?? -1, ruyi = ru?.labels.indexOf('YDS') ?? -1;
-    (rec?.athletes || []).forEach(a => { const tg = ti >= 0 ? num(a.stats[ti]) : 0; t.tg += tg; const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0]); r[0] += tg; r[2] += num(a.stats[ri]); r[3] += num(a.stats[ryi]); });
-    (ru?.athletes || []).forEach(a => { const car = num(a.stats[ci]); t.car += car; const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0]); r[1] += car; r[3] += num(a.stats[ruyi]); }); usage[side.team.id] = t; });
+  const usage = {}; (s.boxscore?.players || []).forEach(side => { const t = { tg: 0, car: 0, rec: 0, ry: 0, p: {} }; const rec = side.statistics.find(x => x.name === 'receiving'), ru = side.statistics.find(x => x.name === 'rushing'); const ti = rec?.labels.indexOf('TGTS') ?? -1, ri = rec?.labels.indexOf('REC') ?? -1, ryi = rec?.labels.indexOf('YDS') ?? -1, ci = ru?.labels.indexOf('CAR') ?? -1, ruyi = ru?.labels.indexOf('YDS') ?? -1;
+    (rec?.athletes || []).forEach(a => { const tg = ti >= 0 ? num(a.stats[ti]) : 0; t.tg += tg; t.rec += num(a.stats[ri]); t.ry += num(a.stats[ryi]); const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0, 0]); r[0] += tg; r[2] += num(a.stats[ri]); r[3] += num(a.stats[ryi]); r[4] += num(a.stats[ryi]); });
+    (ru?.athletes || []).forEach(a => { const car = num(a.stats[ci]); t.car += car; const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0, 0]); r[1] += car; r[3] += num(a.stats[ruyi]); }); usage[side.team.id] = t; });
   c = { f: fantasyFromBox(s), a: awardLines(s), u: usage, s: boxLines(s) }; if (done && Object.keys(c.f).length) store.set(key, c); return c;
 }
 
@@ -2143,7 +2153,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '13.8';
+const APP_VERSION = '13.9';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });

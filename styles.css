@@ -350,6 +350,8 @@ tr.clk{cursor:pointer}tr.clk:hover td{background:var(--panel-3)!important}
 .chart .lA{stroke:var(--accent);fill:none;stroke-width:2;stroke-linejoin:round}
 .chart .lB{stroke:var(--loss);fill:none;stroke-width:2;stroke-dasharray:4 3;stroke-linejoin:round}
 .chart .aA{fill:var(--accent);opacity:.1}
+.chart .lC{stroke:var(--gold);fill:none;stroke-width:2;stroke-linejoin:round}
+.legend i.c{background:var(--gold)}
 .chart .bar.W{fill:var(--win)}.chart .bar.L{fill:var(--loss)}.chart .bar.T{fill:var(--muted)}
 .chart .wp{stroke:var(--accent);fill:none;stroke-width:2}
 .chart .wpf{fill:var(--accent);opacity:.1}
