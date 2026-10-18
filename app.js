@@ -917,27 +917,45 @@ async function rankings(pollName) {
   wire();
 }
 
-/* ---------- power index (computed) ---------- */
+/* ---------- power index: opponent-adjusted rating (SRS-style), shared by the power page and every simulation ---------- */
+const HFA = () => isCFB() ? 3 : 2.2;                 // home-field advantage in points
+const PWIN_SCALE = () => isCFB() ? 9.5 : 7.5;        // how fast win probability rises with the rating gap
+let ratingCache = null;
+async function ratingModel() {
+  const key = LEAGUE.key + ':' + SEASON; if (ratingCache?.key === key && Date.now() - ratingCache.t < 60000) return ratingCache.v;
+  const [stnd, all] = await Promise.all([standingsL3(), seasonGames()]);
+  const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => (div.standings?.entries || []).forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); const r = recOf(e); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: r.w, l: r.l, t: r.t, pf: v('pointsFor'), pa: v('pointsAgainst'), streak: e.stats.find(s => s.name === 'streak')?.displayValue || '' }; })));
+  const ids = Object.keys(T); if (!ids.length) throw new Error('Standings unavailable.');
+  const CAP = 28, UNRATED = isCFB() ? -30 : 0, K = 0.15, hfa = HFA();
+  const played = [], remaining = [], per = {}; ids.forEach(id => per[id] = []);
+  all.filter(ev => !ev._post).forEach(ev => { const c = ev.competitions[0], [a, h] = byHome(c); if (!T[a.team.id] && !T[h.team.id]) return; const neutral = !!c.neutralSite;
+    if (c.status?.type?.completed) { const as = scoreOf(a), hs = scoreOf(h); const m = hs - as - (neutral ? 0 : hfa), cm = Math.max(-CAP, Math.min(CAP, m));
+      if (T[h.team.id]) per[h.team.id].push({ opp: a.team.id, m: cm, raw: hs - as, wk: ev.week?.number || 0 }); if (T[a.team.id]) per[a.team.id].push({ opp: h.team.id, m: -cm, raw: as - hs, wk: ev.week?.number || 0 });
+      if (T[a.team.id] && T[h.team.id]) played.push({ a: a.team.id, h: h.team.id, as, hs, neutral, ev }); }
+    else if (T[a.team.id] && T[h.team.id]) remaining.push({ a: a.team.id, h: h.team.id, wk: ev.week?.number, neutral, ev }); });
+  // iterate: rating = average (adjusted margin + opponent rating); K is a tiny anchor so the system stays stable
+  const R = {}; ids.forEach(id => R[id] = 0);
+  for (let it = 0; it < 600; it++) { const next = {}; ids.forEach(id => { const gs = per[id]; next[id] = gs.reduce((n, g) => n + g.m + (R[g.opp] ?? UNRATED), 0) / (gs.length + K); });
+    const mean = ids.reduce((n, id) => n + next[id], 0) / ids.length; let delta = 0; ids.forEach(id => { next[id] -= mean; delta += Math.abs(next[id] - R[id]); R[id] = next[id]; }); if (delta < 1e-5) break; }
+  ids.forEach(id => { const r = T[id], gs = per[id].sort((x, y) => x.wk - y.wk), n = gs.length; const l3 = gs.slice(-3);
+    r.srs = R[id]; r.sos = n ? gs.reduce((s, g) => s + (R[g.opp] ?? UNRATED), 0) / n : 0; r.adjMov = n ? gs.reduce((s, g) => s + g.m, 0) / n : 0; r.mov = n ? gs.reduce((s, g) => s + g.raw, 0) / n : 0;
+    r.last3 = l3.length ? l3.reduce((s, g) => s + g.m + (R[g.opp] ?? UNRATED), 0) / l3.length : R[id]; r.played = n;
+    const shrink = n / (n + 1); // early-season regression toward average: 1 game → 50%, 6 games → 86%
+    r.rating = (R[id] + 0.12 * (r.last3 - R[id])) * shrink; });
+  const pWin = (home, away, neutral = false) => 1 / (1 + Math.exp(-((T[home].rating - T[away].rating) + (neutral ? 0 : hfa)) / PWIN_SCALE()));
+  const v = { T, ids, played, remaining, pWin, games: all, stnd }; ratingCache = { key, t: Date.now(), v }; return v;
+}
 async function power() {
-  const [d, res] = await Promise.all([standingsL3(), teamResults().catch(() => ({}))]);
-  const rows = [];
-  d.children.forEach(c => c.children.forEach(div => (div.standings?.entries || []).forEach(e => {
-    const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0);
-    const { w, l, t } = recOf(e); const g = w + l + t, pf = v('pointsFor'), pa = v('pointsAgainst');
-    const pyth = (pf || pa) ? Math.pow(pf, 2.37) / (Math.pow(pf, 2.37) + Math.pow(pa, 2.37)) : 0.5;
-    const pct = g ? (w + t / 2) / g : 0;
-    rows.push({ team: e.team, conf: c.abbreviation || c.name, w, l, t, g, pf, pa, diff: pf - pa, mov: g ? (pf - pa) / g : 0, pyth, pct, luck: pct - pyth, pythW: pyth * g, streak: e.stats.find(s => s.name === 'streak')?.displayValue || '' });
-  })));
-  const pctOf = {}; rows.forEach(r => pctOf[r.team.id] = r.pct);
-  rows.forEach(r => { const gs = res[r.team.id] || []; r.sos = gs.length ? gs.reduce((n, g) => n + (pctOf[g.op] ?? .5), 0) / gs.length : .5; const l3 = gs.slice(-3); r.last3 = l3.length ? l3.reduce((n, g) => n + (g.ms - g.os), 0) / l3.length : 0; });
-  rows.forEach(r => r.rating = r.mov * 0.6 + (r.pyth - 0.5) * 24 + (r.sos - 0.5) * 12 + r.last3 * 0.15);
+  const M = await ratingModel();
+  const rows = M.ids.map(id => { const r = M.T[id]; const g = r.w + r.l + r.t; const pyth = (r.pf || r.pa) ? Math.pow(r.pf, 2.37) / (Math.pow(r.pf, 2.37) + Math.pow(r.pa, 2.37)) : .5; const pct = g ? (r.w + r.t / 2) / g : 0;
+    return { ...r, g, pyth, pct, luck: pct - pyth, pythW: pyth * g }; });
   rows.sort((a, b) => b.rating - a.rating).forEach((r, i) => r.rank = i + 1);
-  view.innerHTML = `<div class="bar"><div><h1>Power index</h1><h2>Computed here from scoring, schedule strength and recent form · not an ESPN ranking</h2></div></div>
-    <div class="panel"><h3>All ${rows.length} teams<span class="pill">click a column to sort</span></h3><div class="tw"><table id="pw"><thead><tr><th class="sort" data-k="rank">#</th><th class="sort" data-k="team">Team</th><th class="num sort" data-k="rec">Record</th><th class="num sort" data-k="rating">Rating</th><th class="num sort" data-k="mov">MOV</th><th class="num sort" data-k="pf">PF/G</th><th class="num sort" data-k="pa">PA/G</th><th class="num sort" data-k="pyth">Pyth W-L</th><th class="num sort" data-k="luck">Luck</th><th class="num sort" data-k="sos">SOS</th><th class="num sort" data-k="last3">Last 3 MOV</th><th class="num">STRK</th></tr></thead><tbody></tbody></table></div></div>
-    <p class="note">Rating blends margin of victory, Pythagorean expectation (exponent 2.37), opponents' win percentage (SOS) and average margin over the last three games. <b>Luck</b> is actual win% minus expected: positive means the team has won more than its scoring suggests.</p>`;
+  view.innerHTML = `<div class="bar"><div><h1>Power index</h1><h2>Opponent-adjusted ratings computed here from every result · in points vs. an average ${isCFB() ? 'FBS' : 'NFL'} team · not an ESPN ranking</h2></div></div>
+    <div class="panel"><h3>All ${rows.length} teams<span class="pill">click a column to sort</span></h3><div class="tw"><table id="pw"><thead><tr><th class="sort" data-k="rank">#</th><th class="sort" data-k="team">Team</th><th class="num sort" data-k="rec">Record</th><th class="num sort" data-k="rating">Rating</th><th class="num sort" data-k="sos">SOS<br><small>opp rating</small></th><th class="num sort" data-k="adjMov">Adj. MOV</th><th class="num sort" data-k="mov">Raw MOV</th><th class="num sort" data-k="pf">PF/G</th><th class="num sort" data-k="pa">PA/G</th><th class="num sort" data-k="pyth">Pyth W-L</th><th class="num sort" data-k="luck">Luck</th><th class="num sort" data-k="last3">Last 3<br><small>adj. form</small></th><th class="num">STRK</th></tr></thead><tbody></tbody></table></div></div>
+    <p class="note"><b>Rating</b> is a simple-rating-system number: each team's average margin (home field removed, blowouts capped at 28) plus the average rating of the opponents it played, solved so every result is judged against who it came against. Beating a +20 team by 10 counts more than beating a −15 team by 30. <b>SOS</b> is the average rating of opponents played so far, in points. <b>Adj. MOV</b> is margin after the home-field and cap adjustments; ratings are regressed toward average early in the season. ${isCFB() ? 'FCS opponents count as −30. ' : ''}<b>Luck</b> is actual win% minus Pythagorean expectation. The rating gap plus ${HFA()} points of home field feeds every win probability on the site.</p>`;
   const table = document.getElementById('pw');
-  sortable(table, rows, { rank: r => -r.rank, team: r => r.team.displayName, rec: r => r.pct, rating: r => r.rating, mov: r => r.mov, pf: r => r.g ? r.pf / r.g : 0, pa: r => r.g ? -r.pa / r.g : 0, pyth: r => r.pyth, luck: r => r.luck, sos: r => r.sos, last3: r => r.last3 },
-    r => `<tr class="clk ${isFav(r.team.id) ? 'fav' : ''}" data-t="${esc(r.team.id)}"><td class="num">${r.rank}</td><td class="tm"><img src="${esc(logo(r.team))}" alt="">${esc(r.team.displayName)} <span class="tag">${esc(r.conf)}</span></td><td class="num">${r.w}-${r.l}${r.t ? '-' + r.t : ''}</td><td class="num ${r.rating >= 0 ? 'pos' : 'neg'}">${sgn(r.rating.toFixed(1))}</td><td class="num">${sgn(r.mov.toFixed(1))}</td><td class="num">${r.g ? (r.pf / r.g).toFixed(1) : '–'}</td><td class="num">${r.g ? (r.pa / r.g).toFixed(1) : '–'}</td><td class="num">${r.pythW.toFixed(1)}-${(r.g - r.pythW).toFixed(1)}</td><td class="num ${r.luck >= 0 ? 'pos' : 'neg'}">${sgn((r.luck * 100).toFixed(0))}%</td><td class="num">${r.sos.toFixed(3)}</td><td class="num ${r.last3 >= 0 ? 'pos' : 'neg'}">${sgn(r.last3.toFixed(1))}</td><td class="num">${esc(r.streak)}</td></tr>`, 'rank');
+  sortable(table, rows, { rank: r => -r.rank, team: r => r.team.displayName, rec: r => r.pct, rating: r => r.rating, sos: r => r.sos, adjMov: r => r.adjMov, mov: r => r.mov, pf: r => r.g ? r.pf / r.g : 0, pa: r => r.g ? -r.pa / r.g : 0, pyth: r => r.pyth, luck: r => r.luck, last3: r => r.last3 },
+    r => `<tr class="clk ${isFav(r.team.id) ? 'fav' : ''}" data-t="${esc(r.team.id)}"><td class="num">${r.rank}</td><td class="tm"><img src="${esc(logo(r.team))}" alt="">${esc(r.team.displayName)} <span class="tag">${esc(r.conf)}</span></td><td class="num">${r.w}-${r.l}${r.t ? '-' + r.t : ''}</td><td class="num ${r.rating >= 0 ? 'pos' : 'neg'}"><b>${sgn(r.rating.toFixed(1))}</b></td><td class="num ${r.sos > 2 ? 'pos' : r.sos < -2 ? 'neg' : ''}">${sgn(r.sos.toFixed(1))}</td><td class="num">${sgn(r.adjMov.toFixed(1))}</td><td class="num muted">${sgn(r.mov.toFixed(1))}</td><td class="num">${r.g ? (r.pf / r.g).toFixed(1) : '–'}</td><td class="num">${r.g ? (r.pa / r.g).toFixed(1) : '–'}</td><td class="num">${r.pythW.toFixed(1)}-${(r.g - r.pythW).toFixed(1)}</td><td class="num ${r.luck > .05 ? 'pos' : r.luck < -.05 ? 'neg' : ''}">${sgn(Math.round(r.luck * 100))}%</td><td class="num">${sgn(r.last3.toFixed(1))}</td><td class="num">${esc(r.streak)}</td></tr>`, 'rating');
   table.addEventListener('drawn', wire); wire();
 }
 
@@ -1228,7 +1246,7 @@ async function team(id, tab = 'schedule') {
   view.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { history.replaceState(null, '', `#team/${id}/${b.dataset.tab}`); team(id, b.dataset.tab); });
   wire();
   if (isCur()) buildModel().then(M => { const el = document.getElementById('remsched'); if (!el) return; const rem = M.remaining.filter(g => g.a === String(id) || g.h === String(id)).sort((x, y) => (x.wk || 0) - (y.wk || 0));
-    const rows = rem.map(g => { const home = g.h === String(id); const op = home ? g.a : g.h; const p = home ? M.pWin(g.h, g.a) : 1 - M.pWin(g.h, g.a); return { g, home, op, p }; });
+    const rows = rem.map(g => { const home = g.h === String(id); const op = home ? g.a : g.h; const p = home ? M.pWin(g.h, g.a, g.neutral) : 1 - M.pWin(g.h, g.a, g.neutral); return { g, home, op, p }; });
     const xw = rows.reduce((n, r) => n + r.p, 0); const sos = rows.length ? rows.reduce((n, r) => n + M.T[r.op].rating, 0) / rows.length : 0;
     const hist = store.get(LK('oddsHist:' + SEASON), {}); const pts = Object.keys(hist).map(Number).sort((a, b) => a - b).filter(w => hist[w][id] != null);
     el.outerHTML = (rows.length ? `<div class="panel"><h3>Remaining schedule<span class="pill">${xw.toFixed(1)} proj. wins · opp rating ${sgn(sos.toFixed(1))}</span></h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opponent</th><th class="num">Opp rtg</th><th class="num">Win %</th></tr></thead><tbody>${rows.map(r => `<tr class="clk" data-g="${esc(r.g.ev.id)}"><td class="num">${esc(r.g.wk)}</td><td class="tm"><img src="${esc(logo(M.T[r.op].team))}" alt="">${r.home ? 'vs' : '@'} ${esc(M.T[r.op].team.abbreviation)}</td><td class="num ${M.T[r.op].rating > 0 ? 'neg' : 'pos'}">${sgn(M.T[r.op].rating.toFixed(1))}</td><td class="num ${r.p >= .6 ? 'pos' : r.p <= .4 ? 'neg' : ''}"><b>${Math.round(r.p * 100)}%</b></td></tr>`).join('')}</tbody></table></div></div>` : '')
@@ -1306,18 +1324,7 @@ async function news() {
 
 /* ---------- playoff odds (Monte Carlo, computed here) ---------- */
 /* shared rating model: team table, ratings, played/remaining games, win probability */
-async function buildModel() {
-  const [stnd, gamesAll] = await Promise.all([standingsL3(), seasonGames()]); const games = gamesAll.filter(ev => !ev._post);
-  const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => (div.standings?.entries || []).forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); const r = recOf(e); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: r.w, l: r.l, t: r.t, pf: v('pointsFor'), pa: v('pointsAgainst') }; })));
-  const ids = Object.keys(T); if (!ids.length) throw new Error('Standings unavailable.');
-  ids.forEach(id => { const r = T[id], g = r.w + r.l + r.t; const pyth = (r.pf || r.pa) ? Math.pow(r.pf, 2.37) / (Math.pow(r.pf, 2.37) + Math.pow(r.pa, 2.37)) : .5; r.rating = (g ? (r.pf - r.pa) / g : 0) * 0.6 + (pyth - .5) * 24; r.played = g; });
-  const played = [], remaining = [];
-  games.forEach(ev => { const c = ev.competitions[0], [a, h] = byHome(c); if (!T[a.team.id] || !T[h.team.id]) return; if (c.status?.type?.completed) played.push({ a: a.team.id, h: h.team.id, as: scoreOf(a), hs: scoreOf(h), ev }); else remaining.push({ a: a.team.id, h: h.team.id, wk: ev.week?.number, ev }); });
-  const shrink = Math.min(1, (ids.reduce((n, id) => n + T[id].played, 0) / ids.length) / 8);
-  ids.forEach(id => T[id].rating *= shrink);
-  const pWin = (home, away) => 1 / (1 + Math.exp(-((T[home].rating - T[away].rating) + 2.2) / 7.5));
-  return { T, ids, played, remaining, pWin, games: gamesAll, stnd };
-}
+async function buildModel() { return ratingModel(); }
 async function odds() {
   if (isCFB()) return cfpOdds();
   if (!LEAGUE.odds) { view.innerHTML = `<div class="bar"><div><h1>Playoff odds</h1><h2>${LEAGUE.name}</h2></div></div><div class="panel"><div class="empty">Playoff odds are simulated for the NFL only. For college football, see the <a class="lnk" href="#playoffs">rankings and projected CFP bracket</a>.</div></div>`; return; }
@@ -1337,7 +1344,7 @@ async function odds() {
     </tbody></table></div></div>`; };
   view.innerHTML = `<div class="bar"><div><h1>Playoff odds</h1><h2>${N.toLocaleString()} simulations of the remaining ${remaining.length} games · computed on this page</h2></div><a class="chip" href="#playoffs">Current picture →</a></div>
     <div class="stack">${Object.keys(confs).map(confHTML).join('')}</div>
-    <p class="note">Each simulation plays every remaining game using the Power Index rating gap plus home-field advantage, then seeds the conferences (division winners, then three wild cards; ties broken by head-to-head, then point differential). Ratings are shrunk toward average early in the season. This is an estimate for fun, not ESPN's FPI.</p>`;
+    <p class="note">Each simulation plays every remaining game using the opponent-adjusted Power Index rating gap plus home-field advantage, then seeds the conferences (division winners, then three wild cards; ties broken by head-to-head, then point differential). Ratings are regressed toward average early in the season. This is an estimate for fun, not ESPN's FPI.</p>`;
   wire();
 }
 
@@ -1358,7 +1365,7 @@ async function simSeason(M, N, onProgress) {
   const run = (from, to) => { for (let n = from; n < to; n++) {
     const W = {}, PD = {}, H = {}; ids.forEach(id => { W[id] = T[id].w + T[id].t / 2; PD[id] = T[id].pf - T[id].pa; });
     Object.entries(h2hBase).forEach(([k, v]) => H[k] = [...v]);
-    remaining.forEach(g => { const ph = pWin(g.h, g.a); const k = g.a + '|' + g.h; (H[k] ||= [0, 0]); if (Math.random() < ph) { W[g.h]++; PD[g.h] += 7; PD[g.a] -= 7; H[k][1]++; } else { W[g.a]++; PD[g.a] += 7; PD[g.h] -= 7; H[k][0]++; } });
+    remaining.forEach(g => { const ph = pWin(g.h, g.a, g.neutral); const k = g.a + '|' + g.h; (H[k] ||= [0, 0]); if (Math.random() < ph) { W[g.h]++; PD[g.h] += 7; PD[g.a] -= 7; H[k][1]++; } else { W[g.a]++; PD[g.a] += 7; PD[g.h] -= 7; H[k][0]++; } });
     const cmp = (x, y) => { if (W[y] !== W[x]) return W[y] - W[x]; const k1 = H[x + '|' + y] || [0, 0], k2 = H[y + '|' + x] || [0, 0]; const xw = k1[0] + k2[1], yw = k1[1] + k2[0]; if (xw !== yw) return yw - xw; return (PD[y] - PD[x]) || (Math.random() - .5); };
     Object.values(confs).forEach(cids => { const winners = Object.entries(divs).filter(([k]) => k.startsWith(T[cids[0]].conf + '/')).map(([, m]) => [...m].sort(cmp)[0]).sort(cmp);
       const wc = cids.filter(id => !winners.includes(id)).sort(cmp).slice(0, 3); const inP = [...winners, ...wc];
@@ -1507,7 +1514,7 @@ async function sos() {
   const M = await buildModel(); const T = M.T; const calF = await seasonCalendar().catch(() => null);
   const pct = id => { const r = T[id]; const g = r.w + r.l + r.t; return g ? (r.w + r.t / 2) / g : .5; };
   const rows = M.ids.map(id => { const pl = M.played.filter(g => g.a === id || g.h === id).map(g => g.a === id ? g.h : g.a); const rem = M.remaining.filter(g => g.a === id || g.h === id).sort((x, y) => (x.wk || 0) - (y.wk || 0));
-    const remRows = rem.map(g => { const home = g.h === id; const op = home ? g.a : g.h; return { op, home, wk: g.wk, p: home ? M.pWin(g.h, g.a) : 1 - M.pWin(g.h, g.a), rt: T[op].rating, ev: g.ev }; });
+    const remRows = rem.map(g => { const home = g.h === id; const op = home ? g.a : g.h; return { op, home, wk: g.wk, p: home ? M.pWin(g.h, g.a, g.neutral) : 1 - M.pWin(g.h, g.a, g.neutral), rt: T[op].rating, ev: g.ev }; });
     const avg = arr => arr.length ? arr.reduce((n, x) => n + x, 0) / arr.length : null;
     let hard = null; for (let i = 0; i + 3 <= remRows.length; i++) { const s = avg(remRows.slice(i, i + 3).map(x => x.rt)); if (hard == null || s > hard.v) hard = { v: s, from: remRows[i].wk, to: remRows[i + 2].wk }; }
     return { id, team: T[id].team, conf: T[id].conf, rec: `${T[id].w}-${T[id].l}${T[id].t ? '-' + T[id].t : ''}`, pastPct: avg(pl.map(pct)), pastRt: avg(pl.map(o => T[o].rating)), remRt: avg(remRows.map(x => x.rt)), remN: remRows.length, projW: T[id].w + T[id].t / 2 + remRows.reduce((n, x) => n + x.p, 0), hard, remRows, rating: T[id].rating }; });
@@ -1616,7 +1623,7 @@ async function cfpOdds() {
   const confs = {}; ids.forEach(id => (confs[confOf(id)] ||= []).push(id));
   const run = (from, to) => { for (let n = from; n < to; n++) {
     const W = {}; ids.forEach(id => W[id] = T[id].w + T[id].t / 2);
-    M.remaining.forEach(g => { if (Math.random() < M.pWin(g.h, g.a)) W[g.h]++; else W[g.a]++; });
+    M.remaining.forEach(g => { if (Math.random() < M.pWin(g.h, g.a, g.neutral)) W[g.h]++; else W[g.a]++; });
     const comp = {}; ids.forEach(id => comp[id] = W[id] + T[id].rating / 6 + (prior[id] || 0) + (Math.random() - .5) * .6);
     const champs = Object.entries(confs).filter(([c, m]) => autoOk(m[0])).map(([, m]) => [...m].sort((a, b) => comp[b] - comp[a])[0]);
     champs.forEach(id => out[id].champ++);
@@ -1817,7 +1824,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '11.1';
+const APP_VERSION = '11.2';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });

@@ -36,7 +36,7 @@ Opening `index.html` directly from disk also works in Safari/Chrome; only the in
 
 ## Notes
 - Favorite teams, theme, season, fantasy format and the roster cache live in your browser's localStorage.
-- Playoff odds, the power index and fantasy points are computed in the page; they are not ESPN's numbers.
+- Playoff odds, the power index and fantasy points are computed in the page; they are not ESPN's numbers. The power index is an opponent-adjusted (SRS-style) rating in points: average margin (home field removed, capped at 28) plus average opponent rating, solved iteratively; FCS opponents count as −30 in college mode.
 
 ## Keyboard shortcuts
 `/` search · `←` `→` previous/next week · `t` theme · `?` help · `g` then `h` home, `s` scores, `t` standings,
