@@ -931,14 +931,16 @@ function teamName(t) { if (!t) return ''; const known = teamIndex?.[t.id]; if (k
   return t.location || t.nickname || t.name || ''; }
 /* ---------- college rankings + projected CFP bracket ---------- */
 async function rankings(pollName) {
-  const d = await getJSON(`${API}/rankings`, 300000); const idx = await teamsIndex().catch(() => ({}));
+  const [d, idx, cr] = await Promise.all([getJSON(`${API}/rankings`, 300000), teamsIndex().catch(() => ({})), computedRecords().catch(() => ({}))]);
   const polls = (d.rankings || []).filter(r => r.ranks?.length);
+  // the poll carries the record as of its release; prefer the live count from completed games, then the standings feed
+  const liveRec = (id, fallback) => { const r = cr[id]; const m = String(fallback || '').match(/^(\d+)-(\d+)(?:-(\d+))?/); const fg = m ? num(m[1]) + num(m[2]) + num(m[3] || 0) : -1; if (r && r.g >= fg && r.g > 0) return r.overall; const st = idx[id]?.stats; const ov = st?.find(x => x.name === 'overall')?.displayValue; const m2 = String(ov || '').match(/^(\d+)-(\d+)/); return m2 && num(m2[1]) + num(m2[2]) > fg ? ov : (fallback || ''); };
   if (!polls.length) { view.innerHTML = '<div class="panel"><div class="empty">Rankings are published once the season starts.</div></div>'; return; }
   const sel = polls[Number(pollName)] || polls.find(p => p.type === pollName || p.shortName === pollName) || polls.find(p => /cfp|playoff/i.test(p.name)) || polls[0];
   const cfp = polls.find(p => /cfp|playoff/i.test(p.name)) || polls.find(p => /ap/i.test(p.type)) || polls[0];
   const top12 = cfp.ranks.slice(0, 12);
-  const tm = r => ({ id: r.team?.id, name: teamName(r.team), abbr: r.team?.abbreviation, logo: r.team?.logo || r.team?.logos?.[0]?.href, rec: r.recordSummary });
-  const seedCard = (r, i) => { const t = tm(r); return `<a class="seed-card" href="#team/${esc(t.id)}" style="--tc:${colorOf(idx[t.id] || r.team)}"><span class="sd">${i + 1}</span><img src="${esc(t.logo)}" alt=""><div><b>${esc(t.abbr || t.name)}</b><small>${esc(t.rec || '')}</small></div></a>`; };
+  const tm = r => ({ id: r.team?.id, name: teamName(r.team), abbr: r.team?.abbreviation, logo: r.team?.logo || r.team?.logos?.[0]?.href, rec: liveRec(r.team?.id, r.recordSummary) });
+  const seedCard = (r, i) => { if (!r) return ''; const t = tm(r); return `<a class="seed-card" href="#team/${esc(t.id)}" style="--tc:${colorOf(idx[t.id] || r.team)}"><span class="sd">${i + 1}</span><img src="${esc(t.logo)}" alt=""><div><b>${esc(t.abbr || t.name)}</b><small>${esc(t.rec || '')}</small></div></a>`; };
   const matchup = (hi, lo) => `<div class="mu">${seedCard(top12[hi], hi)}<span class="muted">vs</span>${seedCard(top12[lo], lo)}</div>`;
   view.innerHTML = `<div class="bar"><div><h1>Rankings</h1><h2>${esc(sel.headline || sel.name)}${sel.occurrence?.displayValue ? ' · ' + esc(sel.occurrence.displayValue) : ''}</h2></div><div class="chips">${polls.map((p, i) => `<a class="chip ${p === sel ? 'on' : ''}" href="#playoffs/${i}">${esc(p.shortName || p.name)}</a>`).join('')}<a class="chip gold" href="#odds">Simulated CFP odds →</a></div></div>
     <div class="two"><div class="panel"><h3>${esc(sel.name)}<span class="pill">${sel.ranks.length} teams</span></h3><div class="tw"><table><thead><tr><th>#</th><th>Team</th><th class="num">Record</th><th class="num">Pts</th><th class="num">1st</th><th class="num">Prev</th><th class="num">Trend</th></tr></thead><tbody>
@@ -2179,7 +2181,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '14.0';
+const APP_VERSION = '14.1';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
