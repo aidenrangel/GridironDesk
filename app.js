@@ -172,7 +172,7 @@ async function fullLeaders(onProgress) {
   if (leadersLoading) return leadersLoading;
   leadersLoading = (async () => {
     const site = getJSON(`${API3}/leaders?season=${SEASON}`, 300000).catch(() => null);
-    if (isCFB()) { const siteD = await site; leadersFull = (siteD?.leaders?.categories || []).map(c => ({ ...c, expandable: true })); return leadersFull; }
+    if (isCFB()) { const [siteD, idx] = await Promise.all([site, teamsIndex().catch(() => ({}))]); leadersFull = (siteD?.leaders?.categories || []).map(c => ({ ...c, expandable: true, leaders: (c.leaders || []).filter(l => l.team?.id && idx[l.team.id]) })); return leadersFull; }
     let core = null;
     try { core = await getJSON(`${CORE}/seasons/${SEASON}/types/2/leaders?limit=100`, 300000); } catch (e) { console.warn('core leaders unavailable', e.message); }
     const siteD = await site;
@@ -1007,12 +1007,13 @@ const liveVal = (rec, key) => { const m = LIVE_MAP[key]; if (!m || !rec) return 
 // college: expand one category to ESPN's top 50 by resolving the core feed's athlete links (cached)
 async function expandCategory(cat) {
   if (!cat?.expandable || cat.expanded) return cat;
-  const core = await getJSON(`${CORE}/seasons/${SEASON}/types/2/leaders?limit=50`, 300000).catch(() => null);
+  const core = await getJSON(`${CORE}/seasons/${SEASON}/types/2/leaders?limit=${isCFB() ? 120 : 50}`, 300000).catch(() => null);
   const cc = (core?.categories || []).find(c => c.name === cat.name); if (!cc) return cat;
   const idx = await teamsIndex().catch(() => ({}));
   const known = {}; cat.leaders.forEach(l => known[l.athlete.id] = l);
   const idOf = ref => (ref?.$ref || '').match(/\/(athletes|teams)\/(\d+)/)?.[2];
-  const rows = cc.leaders.filter(l => l.value > 0);
+  // college: ESPN mixes FCS players into the national list; keep FBS teams only (the ones the site tracks)
+  const rows = cc.leaders.filter(l => l.value > 0 && (!isCFB() || idx[idOf(l.team)])).slice(0, 60);
   const out = []; for (let i = 0; i < rows.length; i += 10) { await Promise.all(rows.slice(i, i + 10).map(async l => { const aid = idOf(l.athlete), tid = idOf(l.team); let a = known[aid]?.athlete;
     if (!a) { try { const d = await getJSON(`${CORE}/seasons/${SEASON}/athletes/${aid}`, 3600000); a = { id: aid, displayName: d.displayName, headshot: { href: d.headshot?.href || '' }, position: { abbreviation: d.position?.abbreviation || '' } }; } catch { a = { id: aid, displayName: 'Player #' + aid, headshot: { href: '' }, position: { abbreviation: '' } }; } }
     out.push({ displayValue: l.displayValue, value: l.value, athlete: a, team: idx[tid] || known[aid]?.team || { id: tid, abbreviation: '' } }); })); }
@@ -1061,7 +1062,7 @@ async function leaders(cat) {
       <div class="lfilters" style="margin-top:14px"><span class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.07em">Filter</span><button class="chip on" data-pos="">All</button>${positions.map(p => `<button class="chip" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}${rookieSet.size ? '<button class="chip" data-pos="__rookie">Rookies</button>' : ''}<select id="lteam" aria-label="Team" style="margin-left:auto"><option value="">All teams</option>${teamsIn.map(t => `<option value="${esc(t.id)}">${esc(t.abbreviation || t.displayName)}</option>`).join('')}</select></div>
       <div class="lhead"><span>#</span><span></span><span>Player</span><span>vs leader</span><span>${esc(sel.abbreviation)}</span></div>
       <div id="mainlist"></div>
-      <div id="morewrap" class="empty" style="padding:12px"><button class="chip" id="sharetop">Share top 10</button> <button class="chip" id="more">${sel.expandable && !sel.expanded ? 'Load ESPN top 50' : 'Show all ' + sel.leaders.length}</button></div>
+      <div id="morewrap" class="empty" style="padding:12px"><button class="chip" id="sharetop">Share top 10</button> <button class="chip" id="more">${sel.expandable && !sel.expanded ? 'Load ESPN top 50 (FBS)' : 'Show all ' + sel.leaders.length}</button></div>
     </div>
     <div class="stack lside">${grp[1].filter(c => c !== sel).slice(0, 4).concat(groups.filter(x => x !== grp).map(x => x[1][0])).slice(0, 5).map(c => `<div class="panel"><h3>${esc(c.displayName)}<a class="lnk" style="font-size:12px;letter-spacing:0;text-transform:none" href="#leaders/${esc(c.name)}">All ${c.leaders.length} →</a></h3>${c.leaders.slice(0, 5).map((l, i) => `<a class="leader" href="#player/${esc(l.athlete.id)}"><span class="rank num">${i + 1}</span><img src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub">${esc(l.athlete.position?.abbreviation || '')} · ${esc(l.team?.abbreviation || '')}</div></div><span class="val">${esc(l.displayValue)}</span></a>`).join('')}</div>`).join('')}</div></div>`;
   const row = (l, i) => { const pct = Math.max(2, Math.min(100, l.value / top * 100)); const t = idx[l.team?.id] || l.team; return `<a class="lrow ${isFav(l.team?.id) ? 'me' : ''}" href="#player/${esc(l.athlete.id)}" style="--tc:${colorOf(t)}"><span class="r ${i < 3 ? 't3' : ''}">${i + 1}</span><img class="ph" src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub"><img src="${esc(logo(t))}" alt="">${esc(l.athlete.position?.abbreviation || '')} · ${esc(t?.abbreviation || '')}</div></div><div class="bar" title="${Math.round(pct)}% of leader"><i style="width:${pct}%"></i></div><span class="v">${esc(l.displayValue)}${l.liveAdd ? `<small class="livetag">incl. +${esc(l.liveAdd)} live</small>` : i > 0 ? `<small>${esc((l.value - top).toFixed(/\./.test(l.displayValue) ? 1 : 0))}</small>` : '<small>leader</small>'}</span></a>`; };
@@ -2086,7 +2087,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '12.1';
+const APP_VERSION = '12.2';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
