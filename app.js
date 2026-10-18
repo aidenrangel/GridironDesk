@@ -90,8 +90,9 @@ async function teamsIndex() {
 // normalize: every conference gets a `children` list of divisions; conferences without divisions become one division named after themselves
 function normStandings(d) { return { ...d, children: (d?.children || []).map(c => ({ ...c, children: (c.children && c.children.length) ? c.children : [{ name: c.name, abbreviation: c.abbreviation, standings: c.standings }] })) }; }
 async function standingsL3() { return normStandings(await getJSON(`${API2}/standings?season=${SEASON}${LEAGUE.stQ}`, 300000)); }
-const P4 = ['SEC','Big Ten','Big 12','ACC'];
-const confOrder = (a, b) => { const ia = P4.findIndex(p => (a.name || '').includes(p) || a.abbreviation === p), ib = P4.findIndex(p => (b.name || '').includes(p) || b.abbreviation === p); if (ia >= 0 || ib >= 0) return (ia < 0 ? 9 : ia) - (ib < 0 ? 9 : ib); if (/independ/i.test(a.name) !== /independ/i.test(b.name)) return /independ/i.test(a.name) ? 1 : -1; return (a.name || '').localeCompare(b.name || ''); };
+const P4 = [['SEC', /southeastern|^sec$/i], ['Big Ten', /big ten|^b1g$|^big10$/i], ['Big 12', /big 12|^big12$/i], ['ACC', /atlantic coast|^acc$/i]];
+const p4Index = c => P4.findIndex(([, re]) => re.test(c?.name || '') || re.test(c?.abbreviation || ''));
+const confOrder = (a, b) => { const ia = p4Index(a), ib = p4Index(b); if (ia >= 0 || ib >= 0) return (ia < 0 ? 9 : ia) - (ib < 0 ? 9 : ib); if (/independ/i.test(a.name) !== /independ/i.test(b.name)) return /independ/i.test(a.name) ? 1 : -1; return (a.name || '').localeCompare(b.name || ''); };
 async function teamInfo(id) {
   try { const d = await getJSON(`${API}/teams/${id}`, 300000); if (d.team) return d.team; } catch (e) { console.warn('team feed fallback', e.message); }
   const [idx, st] = await Promise.all([teamsIndex(), standingsL3().catch(() => null)]);
@@ -711,7 +712,7 @@ async function standings(conf) {
                        : [['W','wins'],['L','losses'],['T','ties'],['PCT','winPercent'],['PF','pointsFor'],['PA','pointsAgainst'],['DIFF','differential'],['HOME','Home'],['AWAY','Road'],['DIV','vs. Div.'],['CONF','vs. Conf.'],['STRK','streak']];
   view.innerHTML = `<div class="bar"><div><h1>Standings</h1><h2>${SEASON} regular season · ${isCFB() ? esc(c?.name || '') : 'click a column to sort'}</h2></div>
     ${isCFB() ? `<select id="confsel" aria-label="Conference">${confs.map(x => `<option value="${esc(x.id || x.abbreviation)}" ${x === c ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : `<div class="chips">${confs.map(x => `<a class="chip ${x === c ? 'on' : ''}" href="#standings/${esc(x.abbreviation)}">${esc(x.abbreviation)}</a>`).join('')}</div>`}</div>
-    ${isCFB() ? `<div class="chips" style="margin-bottom:var(--s4)">${confs.filter(x => P4.some(p => x.name.includes(p))).map(x => `<a class="chip ${x === c ? 'on' : ''}" href="#standings/${esc(x.id || x.abbreviation)}">${esc(x.abbreviation || x.name)}</a>`).join('')}</div>` : ''}
+    ${isCFB() ? `<div class="chips" style="margin-bottom:var(--s4)">${confs.filter(x => p4Index(x) >= 0).sort((x, y) => p4Index(x) - p4Index(y)).map(x => `<a class="chip ${x === c ? 'on' : ''}" href="#standings/${esc(x.id || x.abbreviation)}">${esc(P4[p4Index(x)][0])}</a>`).join('')}</div>` : ''}
     <div class="stack">${(c.children || []).map((div, di) => `<div class="panel"><h3>${esc(div.name)}</h3><div class="tw"><table id="st${di}"><thead><tr><th class="sort" data-k="team">Team</th>${cols.map(k => `<th class="num sort" data-k="${k[1]}">${k[0]}</th>`).join('')}</tr></thead><tbody></tbody></table></div></div>`).join('')}</div>`;
   (c.children || []).forEach((div, di) => {
     const colFns = { team: e => e.team.displayName }; cols.forEach(k => colFns[k[1]] = e => { const v = e.stats.find(s => s.name === k[1]); if (v?.value != null && !isNaN(v.value) && !/^\d+-\d+/.test(String(v.displayValue))) return Number(v.value); const m = String(v?.displayValue ?? '').match(/^(\d+)-(\d+)/); return m ? (Number(m[1]) + 0.5) / (Number(m[1]) + Number(m[2]) + 1) + Number(m[1]) / 1000 : String(v?.displayValue ?? ''); });
@@ -1373,7 +1374,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => k.startsWith('rosters:')).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '9.2';
+const APP_VERSION = '9.3';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
