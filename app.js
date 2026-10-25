@@ -1015,6 +1015,30 @@ const LIVE_MAP = { passingYards: ['passing','YDS'], passingTouchdowns: ['passing
   rushingYards: ['rushing','YDS'], rushingTouchdowns: ['rushing','TD'], rushingAttempts: ['rushing','CAR'], receivingYards: ['receiving','YDS'], receivingTouchdowns: ['receiving','TD'], receptions: ['receiving','REC'], receivingTargets: ['receiving','TGTS'],
   totalTackles: ['defensive','TOT'], soloTackles: ['defensive','SOLO'], sacks: ['defensive','SACKS'], tacklesForLoss: ['defensive','TFL'], passesDefended: ['defensive','PD'], QBHits: ['defensive','QB HTS'], interceptions: ['interceptions','INT'], fieldGoalsMade: ['kicking','FG',0], extraPointsMade: ['kicking','XP',0] };
 let liveCache = { t: 0, data: null };
+/* ESPN's season "totals" lag the game log by a game on Sundays, so season totals are summed from the log itself. Rates are recomputed; anything else falls back to ESPN's figure. */
+function logTotals(rows, names, base) {
+  const n0 = v => num(String(v ?? '').replace(/,/g, '')); const idx = n => names.indexOf(n); const col = n => { const i = idx(n); return i < 0 ? 0 : rows.reduce((s, r) => s + n0(r.stats?.[i]), 0); };
+  const fmt = (v, d = 1) => v == null || !Number.isFinite(v) ? '–' : Number.isInteger(v) ? String(v) : v.toFixed(d);
+  const ratio = (a, b, k = 1) => col(b) ? col(a) / col(b) * k : 0;
+  return names.map((n, i) => {
+    if (/long/i.test(n)) return fmt(rows.length ? Math.max(...rows.map(r => n0(r.stats?.[i]))) : 0);
+    switch (n) {
+      case 'completionPct': return fmt(ratio('completions', 'passingAttempts', 100));
+      case 'yardsPerPassAttempt': return fmt(ratio('passingYards', 'passingAttempts'));
+      case 'QBRating': return fmt(passerRating(col('completions'), col('passingAttempts'), col('passingYards'), col('passingTouchdowns'), col('interceptions')));
+      case 'adjQBR': { const ai = idx('passingAttempts'); let w = 0, t = 0; rows.forEach(r => { const q = n0(r.stats?.[i]), a = ai < 0 ? 1 : n0(r.stats?.[ai]); if (q > 0) { t += q * a; w += a; } }); return w ? fmt(t / w) : (base?.[i] ?? '–'); }
+      case 'yardsPerRushAttempt': return fmt(ratio('rushingYards', 'rushingAttempts'));
+      case 'yardsPerReception': return fmt(ratio('receivingYards', 'receptions'));
+      case 'fieldGoalPct': return fmt(ratio('fieldGoalsMade', 'fieldGoalAttempts', 100));
+      case 'extraPointPct': return fmt(ratio('extraPointsMade', 'extraPointAttempts', 100));
+      case 'netAvgPuntYards': return fmt(ratio('netPuntYards', 'punts'));
+      case 'grossAvgPuntYards': return fmt(ratio('puntYards', 'punts'));
+      case 'avgKickoffYards': return fmt(ratio('kickoffYards', 'kickoffs'));
+    }
+    if (/Pct$|^yardsPer|Avg|Rating|^avg/i.test(n)) return base?.[i] ?? '–';
+    const t = rows.reduce((s, r) => s + n0(r.stats?.[i]), 0); return Number.isInteger(t) ? t.toLocaleString() : t.toFixed(1);
+  });
+}
 async function liveBox() {
   if (!isCur()) return { players: {}, games: [] };
   if (liveCache.data && Date.now() - liveCache.t < 30000) return liveCache.data;
@@ -1184,12 +1208,12 @@ async function player(id, tab = 'season') {
   const [bio, gl, ov, inj, career] = await Promise.all([getJSON(`${WEB}/athletes/${id}`, 600000), getJSON(`${WEB}/athletes/${id}/gamelog?season=${SEASON}`, 120000).catch(() => null), getJSON(`${WEB}/athletes/${id}/overview`, 600000).catch(() => null), getJSON(`${API}/injuries`, 300000).catch(() => null), getJSON(`${WEB}/athletes/${id}/stats`, 3600000).catch(() => null)]);
   const p = bio.athlete; const t = p.team || {};
   const myInj = inj?.injuries?.flatMap(tm => tm.injuries || []).find(i => String(i.athlete?.id) === String(id) || i.athlete?.displayName === p.displayName);
-  let glHTML = '', trendHTML = '', splitHTML = '', glRows = [];
+  let glHTML = '', trendHTML = '', splitHTML = '', glRows = [], totalRows = [], glNames = [];
   if (gl?.events && gl.seasonTypes?.length) {
     const labels = gl.labels || [], names = gl.names || [];
     const rows = gl.seasonTypes.flatMap(s => (s.categories || []).flatMap(c => (c.events || []).map(e => ({ ...gl.events[e.eventId], stats: e.stats }))));
     rows.sort((a, b) => (a.week ?? 0) - (b.week ?? 0)); glRows = rows;
-    let totals = gl.seasonTypes[0]?.categories?.[0]?.totals;
+    let totals = gl.seasonTypes[0]?.categories?.[0]?.totals; const seasonRows = [...rows];
     // live game not yet in the log: add a row from the box score and bump the totals
     const lb = isCur() ? await liveBox().catch(() => ({ players: {} })) : { players: {} };
     const lrec = lb.players[String(id)]; let liveRow = '';
@@ -1197,8 +1221,9 @@ async function player(id, tab = 'season') {
       const vals = names.map(n => { const key = n === 'interceptions' && /passing/i.test(gl.categories?.[0]?.name || '') ? 'interceptions_thrown' : n; const v = liveVal(lrec, key); return LIVE_MAP[key] ? v : null; });
       const c = lrec.ev.competitions[0]; const me = c.competitors.find(x => x.team.id === lrec.team.id), op = c.competitors.find(x => x.team.id !== lrec.team.id);
       liveRow = `<tr class="hl" data-g="${esc(lrec.ev.id)}" style="cursor:pointer"><td class="num">${esc(lrec.ev.week?.number ?? '')}</td><td class="tm"><img src="${esc(op?.team?.logo || '')}" alt="">${me?.homeAway === 'home' ? 'vs' : '@'} ${esc(op?.team?.abbreviation || '')}</td><td>${lrec.ev.status.type.state === 'in' ? '<span class="dot"></span>' : ''}<span class="muted num">${esc(me?.score)}–${esc(op?.score)} · ${esc(lrec.ev.status.type.shortDetail)}</span></td>${vals.map(v => `<td class="num">${v == null ? '–' : esc(v)}</td>`).join('')}</tr>`;
-      if (totals) totals = totals.map((t, i) => vals[i] == null ? t : (num(t) + vals[i]).toFixed(/\./.test(String(t)) ? 1 : 0));
+      seasonRows.push({ stats: vals.map(v => v == null ? '' : v) });
     }
+    if (totals && names.length) totals = logTotals(seasonRows, names, totals); totalRows = seasonRows; glNames = names;
     glHTML = `<div class="panel"><h3>${SEASON} game log${liveRow ? '<span class="pill"><span class="pos"><span class="dot"></span>live game included</span></span>' : ''}</h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opp</th><th>Result</th>${labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>
       ${rows.map(r => `<tr class="clk" data-g="${esc(r.id)}"><td class="num">${esc(r.week)}</td><td class="tm"><img src="${esc(r.opponent?.logo)}" alt="">${esc(r.atVs)} ${esc(r.opponent?.abbreviation)}</td><td><span class="res ${esc(r.gameResult)}">${esc(r.gameResult)}</span> <span class="muted num">${esc(r.score)}</span></td>${(r.stats || []).map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}
       ${liveRow}
@@ -1221,6 +1246,9 @@ async function player(id, tab = 'season') {
     ovHTML = `<div class="panel"><h3>${esc(st.displayName || 'Career')}</h3><div class="tw"><table><thead><tr><th>Split</th>${st.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${st.splits.map(s => `<tr><td>${esc(s.displayName)}</td>${s.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`; }
   // career: season-by-season per category, with a chart on the key stat and career totals row
   const cats = (career?.categories || []).filter(c => c.statistics?.length).map(fillQBR);
+  // the current season's row in the career tables comes from the game log too, and the career totals move with it
+  if (isCur() && totalRows.length && glNames.length) cats.forEach(c => { const r = c.statistics.find(x => num(x.season?.year) === SEASON); if (!r || !c.names) return; const map = c.names.map(n => glNames.indexOf(n)); if (!map.some(k => k >= 0)) return; const prow = totalRows.map(x => ({ stats: map.map(k => k < 0 ? '' : x.stats?.[k]) })); const t = logTotals(prow, c.names, r.stats); const old = r.stats.slice();
+    c.names.forEach((n, j) => { if (n === 'gamesPlayed') r.stats[j] = String(totalRows.length); else if (map[j] >= 0) r.stats[j] = t[j]; else return; if (c.totals && !/Pct$|^yardsPer|Avg|Rating|^avg|long|QBR/i.test(n)) { const d = num(String(r.stats[j]).replace(/,/g, '')) - num(String(old[j]).replace(/,/g, '')); if (d) { const tv = num(String(c.totals[j]).replace(/,/g, '')) + d; c.totals[j] = Number.isInteger(tv) ? tv.toLocaleString() : tv.toFixed(1); } } }); });
   const isRateL = l => /%|AVG|RTG|QBR|LNG|PCT|Y\/|\/G|YPC|YPR|^GP$|^GS$/i.test(l);
   const careerHTML = cats.length ? cats.map((c, ci) => { const rows = [...c.statistics].sort((x, y) => x.season.year - y.season.year);
     const ki = Math.max(0, c.names.findIndex(n => /yards|tackles|sacks|interceptions|fieldGoalsMade|receptions|touchdowns/i.test(n) && !/perGame|avg|long/i.test(n)));
@@ -2118,7 +2146,8 @@ async function pcompare(aV, bV, mode = 'season') {
     const seasons = (gl?.filters || []).find(f => /season/i.test(f.displayName || f.name || ''))?.options?.map(o => Number(o.value)).filter(Boolean) || [yr];
     const reg = gl?.seasonTypes?.find(st => /regular/i.test(st.displayName || '')) || gl?.seasonTypes?.[0];
     let totals = reg?.categories?.[0]?.totals || [];
-    if (yr === SEASON && isCur() && gl?.names) { const lb = await liveBox().catch(() => ({ players: {} })); const lrec = lb.players[String(id)]; if (lrec && !rows.some(r => String(r.id) === String(lrec.ev.id))) { const vals = gl.names.map(n => { const key = n === 'interceptions' && /passing/i.test(gl.categories?.[0]?.name || '') ? 'interceptions_thrown' : n; const v = liveVal(lrec, key); return LIVE_MAP[key] ? v : null; }); rows.push({ ...lrec.ev, id: lrec.ev.id, week: lrec.ev.week?.number, stats: vals.map(v => v == null ? '' : v) }); totals = totals.map((t, i) => vals[i] == null ? t : (num(t) + vals[i]).toFixed(/\./.test(String(t)) ? 1 : 0)); } }
+    if (yr === SEASON && isCur() && gl?.names) { const lb = await liveBox().catch(() => ({ players: {} })); const lrec = lb.players[String(id)]; if (lrec && !rows.some(r => String(r.id) === String(lrec.ev.id))) { const vals = gl.names.map(n => { const key = n === 'interceptions' && /passing/i.test(gl.categories?.[0]?.name || '') ? 'interceptions_thrown' : n; const v = liveVal(lrec, key); return LIVE_MAP[key] ? v : null; }); rows.push({ ...lrec.ev, id: lrec.ev.id, week: lrec.ev.week?.number, stats: vals.map(v => v == null ? '' : v) }); } }
+    if (gl?.names?.length && rows.length) totals = logTotals(rows, gl.names, totals);
     return { id, yr, p: bio.athlete, gl, rows, totals, seasons: [...new Set(seasons)].sort((x, y) => y - x), career: (career?.categories || []).map(fillQBR) }; };
   const [A, B] = await Promise.all([load(A0), load(B0)]); const cur0 = { a: A ? { id: A.id, yr: A.yr } : A0, b: B ? { id: B.id, yr: B.yr } : B0 };
   const key = (x, y, m = mode) => `pcompare/${x.id ? x.id + '-' + x.yr : ''}/${y.id ? y.id + '-' + y.yr : ''}${m === 'career' ? '/career' : ''}`;
@@ -2233,7 +2262,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '14.7';
+const APP_VERSION = '14.8';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
