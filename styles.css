@@ -821,3 +821,5 @@ table.stats td.num{font-size:13px}table.stats th{font-size:10.5px}
 .coach b{font-family:var(--display);font-size:22px;display:block;line-height:1}.coach small{color:var(--muted);font-size:12px}
 
 .tmi{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}.tmi img{width:22px;height:22px;object-fit:contain}
+
+.lfilters .chip.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}

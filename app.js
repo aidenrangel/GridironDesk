@@ -1019,7 +1019,7 @@ async function liveBox() {
   if (!isCur()) return { players: {}, games: [] };
   if (liveCache.data && Date.now() - liveCache.t < 30000) return liveCache.data;
   const sb = await getJSON(SB_URL(), 30000).catch(() => ({ events: [] }));
-  const live = (sb.events || []).filter(e => e.status.type.state === 'in');
+  const live = (sb.events || []).filter(e => e.status.type.state === 'in' || (e.status.type.state === 'post' && Date.now() - Date.parse(e.date || 0) < 8 * 3600000));
   const players = {};
   await Promise.all(live.map(async ev => { try { const sum = await getJSON(`${API}/summary?event=${ev.id}`, 30000);
     (sum.boxscore?.players || []).forEach(side => side.statistics.forEach(c => c.athletes.forEach(a => { const r = (players[a.athlete.id] ||= { ev, team: side.team, cats: {} }); const o = (r.cats[c.name] ||= {}); c.labels.forEach((l, i) => o[l] = a.stats[i]); }))); } catch {} }));
@@ -1196,7 +1196,7 @@ async function player(id, tab = 'season') {
     if (lrec && !rows.some(r => String(r.id) === String(lrec.ev.id))) {
       const vals = names.map(n => { const key = n === 'interceptions' && /passing/i.test(gl.categories?.[0]?.name || '') ? 'interceptions_thrown' : n; const v = liveVal(lrec, key); return LIVE_MAP[key] ? v : null; });
       const c = lrec.ev.competitions[0]; const me = c.competitors.find(x => x.team.id === lrec.team.id), op = c.competitors.find(x => x.team.id !== lrec.team.id);
-      liveRow = `<tr class="hl" data-g="${esc(lrec.ev.id)}" style="cursor:pointer"><td class="num">${esc(lrec.ev.week?.number ?? '')}</td><td class="tm"><img src="${esc(op?.team?.logo || '')}" alt="">${me?.homeAway === 'home' ? 'vs' : '@'} ${esc(op?.team?.abbreviation || '')}</td><td><span class="dot"></span><span class="muted num">${esc(me?.score)}–${esc(op?.score)} · ${esc(lrec.ev.status.type.shortDetail)}</span></td>${vals.map(v => `<td class="num">${v == null ? '–' : esc(v)}</td>`).join('')}</tr>`;
+      liveRow = `<tr class="hl" data-g="${esc(lrec.ev.id)}" style="cursor:pointer"><td class="num">${esc(lrec.ev.week?.number ?? '')}</td><td class="tm"><img src="${esc(op?.team?.logo || '')}" alt="">${me?.homeAway === 'home' ? 'vs' : '@'} ${esc(op?.team?.abbreviation || '')}</td><td>${lrec.ev.status.type.state === 'in' ? '<span class="dot"></span>' : ''}<span class="muted num">${esc(me?.score)}–${esc(op?.score)} · ${esc(lrec.ev.status.type.shortDetail)}</span></td>${vals.map(v => `<td class="num">${v == null ? '–' : esc(v)}</td>`).join('')}</tr>`;
       if (totals) totals = totals.map((t, i) => vals[i] == null ? t : (num(t) + vals[i]).toFixed(/\./.test(String(t)) ? 1 : 0));
     }
     glHTML = `<div class="panel"><h3>${SEASON} game log${liveRow ? '<span class="pill"><span class="pos"><span class="dot"></span>live game included</span></span>' : ''}</h3><div class="tw"><table><thead><tr><th>Wk</th><th>Opp</th><th>Result</th>${labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>
@@ -1998,14 +1998,16 @@ async function gameLines(ev) {
    v14.2 · COACHES: head coach per team from ESPN's core feed (career records, experience, seasons)
    ===================================================================== */
 async function coachOf(teamId) {
-  const key = LK(`coach:${SEASON}:${teamId}`); const c = store.get(key, null); if (c && Date.now() - c.t < 86400000) return c.v;
+  const key = LK(`coach2:${SEASON}:${teamId}`); const c = store.get(key, null); if (c && Date.now() - c.t < 86400000) return c.v;
   const https = u => String(u || '').replace(/^http:/, 'https:');
   const list = await getJSON(`${CORE}/seasons/${SEASON}/teams/${teamId}/coaches`, 86400000); const ref = list.items?.[0]?.$ref; if (!ref) return null;
   const season = await getJSON(https(ref), 86400000); const person = season.person?.$ref ? await getJSON(https(season.person.$ref), 86400000).catch(() => season) : season;
   const recs = await Promise.all((person.careerRecords || []).map(r => getJSON(https(r.$ref), 86400000).catch(() => null)));
   const rec = {}; recs.filter(Boolean).forEach(r => { const g = n => num(r.stats?.find(x => x.name === n)?.value); rec[/post/i.test(r.type || r.name) ? 'post' : /regular/i.test(r.type || r.name) ? 'reg' : 'total'] = { w: g('wins'), l: g('losses'), t: g('ties'), summary: r.summary || r.displayValue || '' }; });
-  const years = (person.coachSeasons || []).map(x => Number((x.$ref || '').match(/seasons\/(\d{4})/)?.[1])).filter(Boolean).sort((a, b) => a - b);
-  const v = { id: person.id || season.id, name: `${person.firstName || season.firstName || ''} ${person.lastName || season.lastName || ''}`.trim(), hs: person.headshot?.href || season.headshot?.href || '', exp: person.experience ?? season.experience ?? null, dob: person.dateOfBirth || season.dateOfBirth || null, college: null, rec, years, first: years[0] || null, nSeasons: years.length };
+  // ESPN's season list sometimes carries bogus years (1907, 1933…): keep seasons from 1970 on, after the coach's 23rd birthday, not in the future
+  const dob = person.dateOfBirth || season.dateOfBirth || null; const by = dob ? new Date(dob).getFullYear() : null;
+  const years = [...new Set((person.coachSeasons || []).map(x => Number((x.$ref || '').match(/seasons\/(\d{4})/)?.[1])).filter(y => y >= 1970 && y <= CUR_SEASON && (!by || y >= by + 23)))].sort((a, b) => a - b);
+  const v = { id: person.id || season.id, name: `${person.firstName || season.firstName || ''} ${person.lastName || season.lastName || ''}`.trim(), hs: person.headshot?.href || season.headshot?.href || '', exp: person.experience ?? season.experience ?? null, dob, college: null, rec, years, first: years[0] || null, nSeasons: years.length };
   store.set(key, { t: Date.now(), v }); return v;
 }
 const ageOf = dob => dob ? Math.floor((Date.now() - new Date(dob)) / (365.25 * 86400000)) : null;
@@ -2115,7 +2117,9 @@ async function pcompare(aV, bV, mode = 'season') {
     const rows = gl?.events ? gl.seasonTypes.filter(st => /regular/i.test(st.displayName || '') || gl.seasonTypes.length === 1).flatMap(st => (st.categories || []).flatMap(c => (c.events || []).map(e => ({ ...gl.events[e.eventId], stats: e.stats })))).sort((x, y) => (x.week ?? 0) - (y.week ?? 0)) : [];
     const seasons = (gl?.filters || []).find(f => /season/i.test(f.displayName || f.name || ''))?.options?.map(o => Number(o.value)).filter(Boolean) || [yr];
     const reg = gl?.seasonTypes?.find(st => /regular/i.test(st.displayName || '')) || gl?.seasonTypes?.[0];
-    return { id, yr, p: bio.athlete, gl, rows, totals: reg?.categories?.[0]?.totals || [], seasons: [...new Set(seasons)].sort((x, y) => y - x), career: (career?.categories || []).map(fillQBR) }; };
+    let totals = reg?.categories?.[0]?.totals || [];
+    if (yr === SEASON && isCur() && gl?.names) { const lb = await liveBox().catch(() => ({ players: {} })); const lrec = lb.players[String(id)]; if (lrec && !rows.some(r => String(r.id) === String(lrec.ev.id))) { const vals = gl.names.map(n => { const key = n === 'interceptions' && /passing/i.test(gl.categories?.[0]?.name || '') ? 'interceptions_thrown' : n; const v = liveVal(lrec, key); return LIVE_MAP[key] ? v : null; }); rows.push({ ...lrec.ev, id: lrec.ev.id, week: lrec.ev.week?.number, stats: vals.map(v => v == null ? '' : v) }); totals = totals.map((t, i) => vals[i] == null ? t : (num(t) + vals[i]).toFixed(/\./.test(String(t)) ? 1 : 0)); } }
+    return { id, yr, p: bio.athlete, gl, rows, totals, seasons: [...new Set(seasons)].sort((x, y) => y - x), career: (career?.categories || []).map(fillQBR) }; };
   const [A, B] = await Promise.all([load(A0), load(B0)]); const cur0 = { a: A ? { id: A.id, yr: A.yr } : A0, b: B ? { id: B.id, yr: B.yr } : B0 };
   const key = (x, y, m = mode) => `pcompare/${x.id ? x.id + '-' + x.yr : ''}/${y.id ? y.id + '-' + y.yr : ''}${m === 'career' ? '/career' : ''}`;
   const seasonSel = (X, which) => X && mode !== 'career' ? `<select class="ssel" data-side="${which}" aria-label="Season">${X.seasons.map(y => `<option value="${y}" ${y === X.yr ? 'selected' : ''}>${y}</option>`).join('')}</select>` : '';
@@ -2229,7 +2233,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '14.4';
+const APP_VERSION = '14.7';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
