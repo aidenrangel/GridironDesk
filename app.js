@@ -158,7 +158,40 @@ const NTEAMS = () => LEAGUE.nteams;
 /* Overall W-L-T from a standings entry. ESPN's college feed puts the conference record in wins/losses, so prefer the 'overall' summary. */
 function recOf(e) { const v = n => Number(e.stats?.find(s => s.name === n)?.value ?? NaN); const ov = String(e.stats?.find(s => s.name === 'overall')?.displayValue || ''); const m = ov.match(/^(\d+)-(\d+)(?:-(\d+))?/);
   if (m && (isCFB() || isNaN(v('wins')))) return { w: num(m[1]), l: num(m[2]), t: num(m[3] || 0) }; return { w: v('wins') || 0, l: v('losses') || 0, t: v('ties') || 0 }; }
+/* team-level numbers from one box score: ESPN's team statistics plus sums of the player lines */
+function teamBox(summary) {
+  const out = {}; const pair = v => String(v ?? '0-0').split(/[\/-]/).map(num);
+  (summary.boxscore?.teams || []).forEach(side => { const m = {}; (side.statistics || []).forEach(x => m[x.name] = x.displayValue); const t3 = pair(m.thirdDownEff), t4 = pair(m.fourthDownEff), sk = pair(m.sacksYardsLost), pen = pair(m.totalPenaltiesYards), rz = pair(m.redZoneAttempts), ca = pair(m.completionAttempts), pt = String(m.possessionTime || '0:00').split(':').map(num);
+    out[side.team.id] = { yds: num(m.totalYards), pyds: num(m.netPassingYards), ryds: num(m.rushingYards), ratt: num(m.rushingAttempts), fd: num(m.firstDowns), plays: num(m.totalOffensivePlays), t3, t4, rz: m.redZoneAttempts ? rz : null, to: num(m.turnovers), fl: num(m.fumblesLost), int: num(m.interceptions), sk: sk[0], sky: sk[1], pen: pen[0], peny: pen[1], poss: pt[0] * 60 + (pt[1] || 0), cmp: ca[0], att: ca[1], ptd: 0, tfl: 0, pd: 0, qbh: 0, dtd: num(m.defensiveTouchdowns) }; });
+  (summary.boxscore?.players || []).forEach(side => { const o = out[side.team.id]; if (!o) return; const g = (c, p, l) => { const i = c.labels.indexOf(l); return i < 0 ? 0 : num(p.stats[i]); }; (side.statistics || []).forEach(c => c.athletes.forEach(p => { if (c.name === 'passing') o.ptd += g(c, p, 'TD'); if (c.name === 'defensive') { o.tfl += g(c, p, 'TFL'); o.pd += g(c, p, 'PD'); o.qbh += g(c, p, 'QB HTS'); } })); });
+  return out;
+}
+/* season team stats summed from every box score, in the shape ESPN's team statistics feed uses (live, ranks across the teams given) */
+let boxTeamCache = null;
+async function boxTeamStats(ids, onProgress) {
+  const key = LEAGUE.key + ':' + SEASON + ':' + (ids ? ids.join(',') : 'all'); if (boxTeamCache?.key === key && Date.now() - boxTeamCache.t < 45000) return boxTeamCache.v;
+  const want = ids ? new Set(ids.map(String)) : null; const all = (await seasonGames(false)).filter(e => e.status?.type?.state !== 'pre' && (!want || e.competitions?.[0]?.competitors?.some(c => want.has(String(c.id)))));
+  const T = {}; const mk = () => ({ g: 0, pf: 0, pa: 0, yds: 0, pyds: 0, ryds: 0, ratt: 0, oyds: 0, fd: 0, t3: [0, 0], t4: [0, 0], ot3: [0, 0], rz: [0, 0], give: 0, take: 0, sk: 0, skd: 0, sky: 0, oint: 0, int: 0, fl: 0, pen: 0, peny: 0, poss: 0, cmp: 0, att: 0, ptd: 0, tfl: 0, pd: 0, qbh: 0 });
+  let done = 0; const work = async ev => { try { const tb = (await gameLines(ev)).t || {}; const comp = ev.competitions?.[0]; const cs = comp?.competitors || []; if (cs.length !== 2) return; const [x, y] = cs; const sides = [[x, y], [y, x]];
+      sides.forEach(([me, op]) => { const id = String(me.id); if (want && !want.has(id)) return; const a = tb[id], b = tb[String(op.id)]; if (!a || !b) return; const t = T[id] ||= mk(); t.g++; t.pf += num(me.score); t.pa += num(op.score); t.yds += a.yds; t.pyds += a.pyds; t.ryds += a.ryds; t.ratt += a.ratt; t.oyds += b.yds; t.fd += a.fd; t.t3[0] += a.t3[0]; t.t3[1] += a.t3[1]; t.t4[0] += a.t4[0]; t.t4[1] += a.t4[1]; t.ot3[0] += b.t3[0]; t.ot3[1] += b.t3[1]; if (a.rz) { t.rz[0] += a.rz[0]; t.rz[1] += a.rz[1]; } t.give += a.to; t.take += b.to; t.skd += a.sk; t.sky += a.sky; t.sk += b.sk; t.int += a.int; t.oint += b.int; t.fl += a.fl; t.pen += a.pen; t.peny += a.peny; t.poss += a.poss; t.cmp += a.cmp; t.att += a.att; t.ptd += a.ptd; t.tfl += a.tfl; t.pd += a.pd; t.qbh += a.qbh; }); } catch {} done++; onProgress?.(done / all.length); };
+  for (let i = 0; i < all.length; i += 12) await Promise.all(all.slice(i, i + 12).map(work));
+  const pc = (a, b) => b ? a / b * 100 : 0; const V = {};
+  Object.entries(T).forEach(([id, t]) => { const g = t.g || 1; const per = v => v / g; const rows = {
+    'scoring.totalPointsPerGame': [per(t.pf), 1], 'passing.yardsPerGame': [per(t.yds), 1], 'passing.passingYardsPerGame': [per(t.pyds), 1], 'rushing.rushingYardsPerGame': [per(t.ryds), 1], 'rushing.yardsPerRushAttempt': [t.ratt ? t.ryds / t.ratt : 0, 1],
+    'passing.completionPct': [pc(t.cmp, t.att), 1], 'passing.QBRating': [passerRating(t.cmp, t.att, t.pyds + t.sky, t.ptd, t.int), 1], 'passing.interceptions': [t.int, 0], 'passing.sacks': [t.skd, 0],
+    'miscellaneous.thirdDownConvPct': [pc(t.t3[0], t.t3[1]), 1], 'miscellaneous.fourthDownConvPct': [pc(t.t4[0], t.t4[1]), 1], 'miscellaneous.thirdDownConvPctAllowed': [pc(t.ot3[0], t.ot3[1]), 1], 'miscellaneous.redzoneScoringPct': t.rz[1] ? [pc(t.rz[0], t.rz[1]), 1] : null,
+    'miscellaneous.possessionTimeSeconds': [per(t.poss), 'time'], 'miscellaneous.totalGiveaways': [t.give, 0], 'miscellaneous.totalTakeaways': [t.take, 0], 'miscellaneous.turnOverDifferential': [t.take - t.give, 'sgn'],
+    'defensive.sacks': [t.sk, 0], 'defensive.pointsAllowedPerGame': [per(t.pa), 1], 'defensive.yardsAllowedPerGame': [per(t.oyds), 1], 'defensiveInterceptions.interceptions': [t.oint, 0], 'defensive.tacklesForLoss': [t.tfl, 0], 'defensive.passesDefended': [t.pd, 0], 'defensive.QBHits': [t.qbh, 0],
+    'general.totalPenaltyYards': [t.peny, 0], 'general.totalPenalties': [t.pen, 0], 'general.fumblesLost': [t.fl, 0], 'general.firstDownsPerGame': [per(t.fd), 1] };
+    const o = { _g: t.g }; Object.entries(rows).forEach(([k, r]) => { if (!r) return; const [v, f] = r; o[k] = { name: k.split('.')[1], value: v, displayValue: f === 'time' ? `${Math.floor(v / 60)}:${String(Math.round(v % 60)).padStart(2, '0')}` : f === 'sgn' ? (v > 0 ? '+' : '') + v : f === 0 ? String(Math.round(v)) : v.toFixed(1) }; if (!o[o[k].name]) o[o[k].name] = o[k]; }); V[id] = o; });
+  if (!ids) { const tids = Object.keys(V); const keys = new Set(tids.flatMap(id => Object.keys(V[id]).filter(k => k.includes('.')))); keys.forEach(k => { const lower = LOWER_BETTER.has(k); const sorted = tids.filter(id => V[id][k]).sort((a, b) => lower ? V[a][k].value - V[b][k].value : V[b][k].value - V[a][k].value); let rank = 0, prev = null; sorted.forEach((id, i) => { const v = V[id][k].value; if (v !== prev) { rank = i + 1; prev = v; } V[id][k].rank = rank; V[id][k].rankDisplayValue = ord(rank); }); }); }
+  const v = { teams: V, games: all.length }; boxTeamCache = { key, t: Date.now(), v }; return v;
+}
 async function teamStats(id) {
+  if (isCur()) { try { const box = isCFB() ? await boxTeamStats([id]) : await boxTeamStats(); const b = box.teams[String(id)]; if (b && b._g) { if (isCFB()) { try { const e = await teamStatsESPN(id); if (e) Object.keys(b).forEach(k => { if (e[k]?.rank) b[k].rank = e[k].rank; }); } catch {} } return b; } } catch (e) { console.warn('box team stats', e.message); } }
+  return teamStatsESPN(id);
+}
+async function teamStatsESPN(id) {
   try { const d = await getJSON(`${CORE}/seasons/${SEASON}/types/2/teams/${id}/statistics`, 600000); const out = {};
     (d.splits?.categories || []).forEach(c => c.stats.forEach(s => { const k = c.name + '.' + s.name; const v = LOWER_BETTER.has(k) && s.rank ? { ...s, rank: NTEAMS() + 1 - s.rank, rankDisplayValue: ord(NTEAMS() + 1 - s.rank) } : s; out[k] = v; if (!out[s.name]) out[s.name] = v; })); return out;
   } catch (e) { console.warn('team stats unavailable', e.message); return null; }
@@ -1242,7 +1275,7 @@ async function player(id, tab = 'season') {
     }
   }
   let ovHTML = '';
-  if (ov?.statistics?.splits?.length) { const st = ov.statistics;
+  if (ov?.statistics?.splits?.length && !(isCur() && glRows.length)) { const st = ov.statistics;
     ovHTML = `<div class="panel"><h3>${esc(st.displayName || 'Career')}</h3><div class="tw"><table><thead><tr><th>Split</th>${st.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>${st.splits.map(s => `<tr><td>${esc(s.displayName)}</td>${s.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`; }
   // career: season-by-season per category, with a chart on the key stat and career totals row
   const cats = (career?.categories || []).filter(c => c.statistics?.length).map(fillQBR);
@@ -1351,10 +1384,10 @@ async function team(id, tab = 'schedule') {
     </tbody></table></div></div>`;
   } else if (tab === 'stats') {
     tt.innerHTML = '<div class="panel"><div class="skel"></div></div>';
-    const [st, ldc] = await Promise.all([teamStats(id), fullLeaders().catch(() => null)]);
+    const [st, ldc] = await Promise.all([teamStats(id), (isCFB() ? fullLeaders() : statsAsLeaders()).catch(() => null)]);
     const ld = ldc ? { leaders: { categories: ldc } } : null;
     const cell = (label, key) => { const s = st?.[key]; if (!s) return ''; return `<div><small>${label}</small><b>${esc(s.displayValue)}</b> ${rankTag(s.rank)}</div>`; };
-    const off = [['Points / game','scoring.totalPointsPerGame'],['Team QBR','passing.QBR'],['4th down %','miscellaneous.fourthDownConvPct'],['Red zone TD %','miscellaneous.redzoneTouchdownPct'],['Possession / game','miscellaneous.possessionTimeSeconds'],['Yards / game','passing.yardsPerGame'],['Pass yds / game','passing.passingYardsPerGame'],['Rush yds / game','rushing.rushingYardsPerGame'],['3rd down %','miscellaneous.thirdDownConvPct'],['Red zone %','miscellaneous.redzoneScoringPct'],['Giveaways','miscellaneous.totalGiveaways'],['Sacks taken','passing.sacks'],['Completion %','passing.completionPct'],['QB rating','passing.QBRating'],['Yds / carry','rushing.yardsPerRushAttempt'],['Yds / reception','receiving.yardsPerReception']];
+    const off = [['Points / game','scoring.totalPointsPerGame'],['4th down %','miscellaneous.fourthDownConvPct'],['Possession / game','miscellaneous.possessionTimeSeconds'],['Yards / game','passing.yardsPerGame'],['Pass yds / game','passing.passingYardsPerGame'],['Rush yds / game','rushing.rushingYardsPerGame'],['3rd down %','miscellaneous.thirdDownConvPct'],['Red zone %','miscellaneous.redzoneScoringPct'],['Giveaways','miscellaneous.totalGiveaways'],['Sacks taken','passing.sacks'],['Completion %','passing.completionPct'],['QB rating','passing.QBRating'],['Yds / carry','rushing.yardsPerRushAttempt'],['Yds / reception','receiving.yardsPerReception']];
     const def = [['Sacks','defensive.sacks'],['Opp 3rd down %','miscellaneous.thirdDownConvPctAllowed'],['Pts allowed / game','defensive.pointsAllowedPerGame'],['Takeaways','miscellaneous.totalTakeaways'],['TO differential','miscellaneous.turnOverDifferential'],['Interceptions','defensiveInterceptions.interceptions'],['Tackles for loss','defensive.tacklesForLoss'],['Passes defended','defensive.passesDefended'],['Forced fumbles','defensive.fumblesForced'],['QB hits','defensive.QBHits']];
     const tl = (ld?.leaders?.categories || []).filter(c => ['passingYards','passingTouchdowns','rushingYards','rushingTouchdowns','receivingYards','receivingTouchdowns','receptions','sacks','interceptions','totalTackles'].includes(c.name)).map(c => { const l = c.leaders.find(x => x.team?.id === String(id)); return l ? `<a class="leader" href="#player/${esc(l.athlete.id)}"><span class="rank num">${c.leaders.indexOf(l) + 1}</span><img src="${esc(hsOf(l.athlete))}" alt="" loading="lazy"><div><div class="nm">${esc(l.athlete.displayName)}</div><div class="sub">${esc(c.displayName)} · ${ord(c.leaders.indexOf(l) + 1)} in NFL</div></div><span class="val">${esc(l.displayValue)}</span></a>` : ''; }).join('');
     tt.innerHTML = (st ? `<div class="panel"><h3>Offense<span class="pill">league rank</span></h3><div class="prof">${off.map(x => cell(...x)).join('')}</div></div><div class="panel"><h3>Defense</h3><div class="prof">${def.map(x => cell(...x)).join('')}</div></div>` : '<div class="panel"><div class="empty">Team statistics feed is unavailable right now.</div></div>')
@@ -2013,12 +2046,12 @@ function importSettings(txt) { const j = JSON.parse(txt); if (j?.app !== 'gridir
 
 /* ---------- 19 · one summary fetch per game, shared by fantasy / awards / usage ---------- */
 async function gameLines(ev) {
-  const key = LK('gl4:' + ev.id); const done = ev.status?.type?.completed; let c = done ? store.get(key, null) : null; if (c) return c;
+  const key = LK('gl5:' + ev.id); const done = ev.status?.type?.completed; let c = done ? store.get(key, null) : null; if (c) return c;
   const s = await getJSON(`${API}/summary?event=${ev.id}`, done ? 86400000 : 60000);
   const usage = {}; (s.boxscore?.players || []).forEach(side => { const t = { tg: 0, car: 0, rec: 0, ry: 0, p: {} }; const rec = side.statistics.find(x => x.name === 'receiving'), ru = side.statistics.find(x => x.name === 'rushing'); const ti = rec?.labels.indexOf('TGTS') ?? -1, ri = rec?.labels.indexOf('REC') ?? -1, ryi = rec?.labels.indexOf('YDS') ?? -1, ci = ru?.labels.indexOf('CAR') ?? -1, ruyi = ru?.labels.indexOf('YDS') ?? -1;
     (rec?.athletes || []).forEach(a => { const tg = ti >= 0 ? num(a.stats[ti]) : 0; t.tg += tg; t.rec += num(a.stats[ri]); t.ry += num(a.stats[ryi]); const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0, 0]); r[0] += tg; r[2] += num(a.stats[ri]); r[3] += num(a.stats[ryi]); r[4] += num(a.stats[ryi]); });
     (ru?.athletes || []).forEach(a => { const car = num(a.stats[ci]); t.car += car; const r = (t.p[a.athlete.id] ||= [0, 0, 0, 0, 0]); r[1] += car; r[3] += num(a.stats[ruyi]); }); usage[side.team.id] = t; });
-  c = { f: fantasyFromBox(s), a: awardLines(s), u: usage, s: boxLines(s) }; if (done && Object.keys(c.f).length) store.set(key, c); return c;
+  c = { f: fantasyFromBox(s), a: awardLines(s), u: usage, s: boxLines(s), t: teamBox(s) }; if (done && Object.keys(c.f).length) store.set(key, c); return c;
 }
 
 
@@ -2262,7 +2295,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '14.8';
+const APP_VERSION = '14.9';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
@@ -2300,16 +2333,17 @@ async function home() {
 }
 
 /* ---------- team stats table (7) ---------- */
-const TSTATS = [['Points/G','scoring.totalPointsPerGame'],['Yds/G','passing.yardsPerGame'],['Pass Y/G','passing.passingYardsPerGame'],['Rush Y/G','rushing.rushingYardsPerGame'],['QBR','passing.QBR'],['3rd %','miscellaneous.thirdDownConvPct'],['4th %','miscellaneous.fourthDownConvPct'],['RZ TD %','miscellaneous.redzoneTouchdownPct'],['Give','miscellaneous.totalGiveaways'],['Take','miscellaneous.totalTakeaways'],['TO +/-','miscellaneous.turnOverDifferential'],['Sacks','defensive.sacks'],['Sacked','passing.sacks'],['INT','defensiveInterceptions.interceptions'],['Pen Yds','general.totalPenaltyYards']];
+const TSTATS = [['Points/G','scoring.totalPointsPerGame'],['Yds/G','passing.yardsPerGame'],['Pass Y/G','passing.passingYardsPerGame'],['Rush Y/G','rushing.rushingYardsPerGame'],['RTG','passing.QBRating'],['3rd %','miscellaneous.thirdDownConvPct'],['4th %','miscellaneous.fourthDownConvPct'],['RZ %','miscellaneous.redzoneScoringPct'],['Give','miscellaneous.totalGiveaways'],['Take','miscellaneous.totalTakeaways'],['TO +/-','miscellaneous.turnOverDifferential'],['Sacks','defensive.sacks'],['Sacked','passing.sacks'],['INT','defensiveInterceptions.interceptions'],['Pen Yds','general.totalPenaltyYards']];
 async function teamstats(sortKey) {
   view.innerHTML = `<div class="bar"><div><h1>Team stats</h1><h2>Loading all 32 teams…</h2></div></div><div class="prog" id="tsp"><i style="width:0"></i></div>`;
   const idx = await teamsIndex(); const ids = Object.keys(idx); let done = 0;
+  if (!isCFB() && isCur()) { try { await boxTeamStats(null, p => { const b = document.querySelector('#tsp i'); if (b) b.style.width = p * 100 + '%'; }); } catch {} }
   const rows = (await Promise.all(ids.map(async id => { const st = await teamStats(id); done++; const b = document.querySelector('#tsp i'); if (b) b.style.width = done / ids.length * 100 + '%'; return st ? { id, team: idx[id], st } : null; }))).filter(Boolean);
   if (!rows.length) { view.innerHTML = '<div class="panel"><div class="empty">ESPN\'s team statistics feed is unavailable right now.</div></div>'; return; }
   const cols = TSTATS.filter(([, k]) => rows.some(r => r.st[k]));
   // exact ranks from the full table (handles ties better than ESPN's flipped rank)
   cols.forEach(([, k]) => { const lower = LOWER_BETTER.has(k); const sorted = rows.filter(r => r.st[k]).sort((a, b) => lower ? num(a.st[k].value) - num(b.st[k].value) : num(b.st[k].value) - num(a.st[k].value)); let rank = 0, prev = null; sorted.forEach((r, i) => { const v = num(r.st[k].value); if (v !== prev) { rank = i + 1; prev = v; } r.st[k] = { ...r.st[k], rank }; }); });
-  view.innerHTML = `<div class="bar"><div><h1>Team stats</h1><h2>${SEASON} regular season · click a column to sort · rank in small type</h2></div></div>
+  view.innerHTML = `<div class="bar"><div><h1>Team stats</h1><h2>${SEASON} regular season · ${!isCFB() && isCur() ? 'summed live from every box score' : 'from ESPN'} · click a column to sort · rank in small type</h2></div></div>
     <div class="panel"><div class="tw"><table id="tst"><thead><tr><th class="sort" data-k="team">Team</th>${cols.map(([l, k]) => `<th class="num sort" data-k="${k}">${l}</th>`).join('')}</tr></thead><tbody></tbody></table></div></div>`;
   const colFns = { team: r => r.team.displayName }; cols.forEach(([, k]) => colFns[k] = r => num(r.st[k]?.value));
   const t = document.getElementById('tst');
