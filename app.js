@@ -778,7 +778,7 @@ function wpPanel(S) {
 }
 async function pregameHTML(S) {
   const [M, inj, all] = await Promise.all([buildModel().catch(() => null), getJSON(`${API}/injuries`, 300000).catch(() => null), seasonGames().catch(() => [])]);
-  const aId = S.a.team.id, hId = S.h.team.id; const pH = M && M.T[hId] && M.T[aId] ? M.pWin(hId, aId) : null;
+  const aId = S.a.team.id, hId = S.h.team.id; const pH = M && M.T[hId] && M.T[aId] ? M.pWin(hId, aId, !!S.c?.neutralSite, mktOf(S.ev)) : null;
   const res = (await teamResults().catch(() => ({})));
   const last5 = id => (res[id] || []).slice(-5).map(g => `<span class="${g.res}" title="${esc(g.opTeam?.abbreviation)} ${g.ms}-${g.os}">${g.res}</span>`).join('');
   const h2h = all.filter(ev => ev.id !== String(S.ev?.id) && ev.competitions[0].competitors.some(x => x.team.id === aId) && ev.competitions[0].competitors.some(x => x.team.id === hId));
@@ -989,24 +989,42 @@ async function rankings(pollName) {
 }
 
 /* ---------- power index: opponent-adjusted rating (SRS-style), shared by the power page and every simulation ---------- */
-const HFA = () => isCFB() ? 3 : 2.2;                 // home-field advantage in points
+const HFA = () => isCFB() ? 3 : 1.5;                 // home-field advantage in points (NFL value fitted on 2025-26 results)
+const MKT_BLEND = 0.6;                               // weight on the betting line when one exists for an upcoming game
+/* margin transform: full credit to 14 points, half credit beyond, nothing past 35 (NFL); college keeps the hard cap */
+const softMargin = m => { const x = Math.abs(m), y = x <= 14 ? x : 14 + (x - 14) * .5; return Math.sign(m) * Math.min(35, y); };
+/* expected home margin from ESPN's odds object on a scoreboard event (details like "KC -3.5"), or null */
+function mktOf(ev) { const c = ev?.competitions?.[0]; const o = c?.odds?.[0]; if (!o) return null; const h = c.competitors?.find(x => x.homeAway === 'home'), a = c.competitors?.find(x => x.homeAway === 'away'); const m = String(o.details || '').match(/^([A-Z]+)\s+(-?\d+(?:\.\d+)?)/); if (m && h && a) { const v = Math.abs(num(m[2])); if (m[1] === h.team?.abbreviation) return v; if (m[1] === a.team?.abbreviation) return -v; } if (o.spread != null && o.homeTeamOdds) return o.homeTeamOdds.favorite ? Math.abs(num(o.spread)) : -Math.abs(num(o.spread)); return null; }
+/* last season's final ratings, scaled toward average, as the preseason prior for the NFL (cached for the season) */
+let priorCache = null;
+async function priorRatings() {
+  if (isCFB() || !isCur()) return null; const key = LK('prior2:' + SEASON); const c = store.get(key, null); if (c && c.v) return c.v; if (priorCache) return priorCache;
+  priorCache = (async () => { try { const yr = SEASON - 1; const weeks = await Promise.all(Array.from({ length: 18 }, (_, i) => getJSON(`${API}/scoreboard?seasontype=2&week=${i + 1}&dates=${yr}`, 86400000).catch(() => ({ events: [] }))));
+    const per = {}; weeks.forEach(w => (w.events || []).forEach(ev => { const c = ev.competitions[0]; if (!c?.status?.type?.completed) return; const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away'); const m = softMargin(num(h.score) - num(a.score)) - (c.neutralSite ? 0 : HFA()); (per[h.team.id] ||= []).push({ opp: a.team.id, m }); (per[a.team.id] ||= []).push({ opp: h.team.id, m: -m }); }));
+    const ids = Object.keys(per); if (ids.length < 20) return null; const R = {}; ids.forEach(id => R[id] = 0);
+    for (let it = 0; it < 600; it++) { const nx = {}; ids.forEach(id => { const gs = per[id]; nx[id] = gs.reduce((n, g) => n + g.m + (R[g.opp] ?? 0), 0) / (gs.length + .15); }); const mean = ids.reduce((n, id) => n + nx[id], 0) / ids.length; let d = 0; ids.forEach(id => { nx[id] -= mean; d += Math.abs(nx[id] - R[id]); R[id] = nx[id]; }); if (d < 1e-5) break; }
+    const v = {}; ids.forEach(id => v[id] = R[id] * .6); store.set(key, { t: Date.now(), v }); return v; } catch (e) { console.warn('prior unavailable', e.message); return null; } })();
+  return priorCache;
+}
 const PWIN_SCALE = () => isCFB() ? 9.5 : 7.5;        // how fast win probability rises with the rating gap
 let ratingCache = null;
 async function ratingModel() {
   const key = LEAGUE.key + ':' + SEASON; if (ratingCache?.key === key && Date.now() - ratingCache.t < 60000) return ratingCache.v;
-  const [stnd, all, rkPoll] = await Promise.all([standingsL3(), seasonGames(), isCFB() ? getJSON(`${API}/rankings`, 300000).catch(() => null) : null]);
+  const [stnd, all, rkPoll, prevPrior] = await Promise.all([standingsL3(), seasonGames(), isCFB() ? getJSON(`${API}/rankings`, 300000).catch(() => null) : null, priorRatings().catch(() => null)]);
   const T = {}; (stnd.children || []).forEach(conf => (conf.children || []).forEach(div => (div.standings?.entries || []).forEach(e => { const v = n => Number(e.stats.find(s => s.name === n)?.value ?? 0); const r = recOf(e); T[e.team.id] = { id: e.team.id, team: e.team, conf: conf.abbreviation, div: div.name, w: r.w, l: r.l, t: r.t, pf: v('pointsFor'), pa: v('pointsAgainst'), streak: e.stats.find(s => s.name === 'streak')?.displayValue || '' }; })));
   const ids = Object.keys(T); if (!ids.length) throw new Error('Standings unavailable.');
   const CAP = 28, UNRATED = isCFB() ? -30 : 0, K = 0.15, hfa = HFA();
   const played = [], remaining = [], per = {}; ids.forEach(id => per[id] = []);
   all.filter(ev => !ev._post).forEach(ev => { const c = ev.competitions[0], [a, h] = byHome(c); if (!T[a.team.id] && !T[h.team.id]) return; const neutral = !!c.neutralSite;
-    if (c.status?.type?.completed) { const as = scoreOf(a), hs = scoreOf(h); const m = hs - as - (neutral ? 0 : hfa), cm = Math.max(-CAP, Math.min(CAP, m));
+    if (c.status?.type?.completed) { const as = scoreOf(a), hs = scoreOf(h); const cm = (isCFB() ? Math.max(-CAP, Math.min(CAP, hs - as)) : softMargin(hs - as)) - (neutral ? 0 : hfa);
       if (T[h.team.id]) per[h.team.id].push({ opp: a.team.id, m: cm, raw: hs - as, wk: ev.week?.number || 0 }); if (T[a.team.id]) per[a.team.id].push({ opp: h.team.id, m: -cm, raw: as - hs, wk: ev.week?.number || 0 });
       if (T[a.team.id] && T[h.team.id]) played.push({ a: a.team.id, h: h.team.id, as, hs, neutral, ev }); }
-    else remaining.push({ a: a.team.id, h: h.team.id, wk: ev.week?.number, neutral, ev, pre: c.status?.type?.state === 'pre', teams: { [a.team.id]: a.team, [h.team.id]: h.team }, unrated: !(T[a.team.id] && T[h.team.id]) }); });
+    else remaining.push({ a: a.team.id, h: h.team.id, wk: ev.week?.number, neutral, ev, mkt: mktOf(ev), pre: c.status?.type?.state === 'pre', teams: { [a.team.id]: a.team, [h.team.id]: h.team }, unrated: !(T[a.team.id] && T[h.team.id]) }); });
   // preseason prior (college): the AP/CFP poll stands in for team strength until each team has ~4 results
   const prior = {}; if (rkPoll) { const poll = (rkPoll.rankings || []).find(p => /ap/i.test(p.type)) || (rkPoll.rankings || [])[0]; (poll?.ranks || []).forEach(r => { if (T[r.team?.id]) prior[r.team.id] = (26 - r.current) * 0.9; }); }
-  const wP = id => rkPoll ? Math.max(0, 4 - per[id].length) : 0;
+  // NFL prior: last season's ratings scaled to 60%, worth 4 games of evidence (fitted on 2025-26: beats shrinking toward zero)
+  if (prevPrior) ids.forEach(id => { if (prevPrior[id] != null) prior[id] = prevPrior[id]; });
+  const wP = id => rkPoll ? Math.max(0, 4 - per[id].length) : prevPrior ? 4 : 0;
   // iterate: rating = average (adjusted margin + opponent rating); K is a tiny anchor so the system stays stable
   const R = {}; ids.forEach(id => R[id] = 0);
   for (let it = 0; it < 600; it++) { const next = {}; ids.forEach(id => { const gs = per[id]; const w = wP(id); next[id] = (gs.reduce((n, g) => n + g.m + (R[g.opp] ?? UNRATED), 0) + w * (prior[id] || 0)) / (gs.length + K + w); });
@@ -1014,8 +1032,8 @@ async function ratingModel() {
   ids.forEach(id => { const r = T[id], gs = per[id].sort((x, y) => x.wk - y.wk), n = gs.length; const l3 = gs.slice(-3);
     r.srs = R[id]; r.sos = n ? gs.reduce((s, g) => s + (R[g.opp] ?? UNRATED), 0) / n : 0; r.adjMov = n ? gs.reduce((s, g) => s + g.m, 0) / n : 0; r.mov = n ? gs.reduce((s, g) => s + g.raw, 0) / n : 0;
     r.last3 = l3.length ? l3.reduce((s, g) => s + g.m + (R[g.opp] ?? UNRATED), 0) / l3.length : R[id]; r.played = n;
-    const shrink = wP(id) ? 1 : n / (n + 1); // early-season regression toward average: 1 game → 50%, 6 games → 86% (college uses the poll prior instead)
-    r.rating = (R[id] + 0.12 * (r.last3 - R[id])) * shrink; });
+    const shrink = wP(id) || prevPrior ? 1 : n / (n + 1); // early-season regression toward average when there's no prior: 1 game → 50%, 6 games → 86%
+    r.rating = (prevPrior ? R[id] : R[id] + 0.12 * (r.last3 - R[id])) * shrink; });
   // offense / defense split: points scored by i against j ≈ league average + off[i] + def[j] (def > 0 = allows more)
   const pts = {}; ids.forEach(id => pts[id] = []); let tot = 0, cnt = 0;
   all.filter(ev => !ev._post && ev.competitions[0].status?.type?.completed).forEach(ev => { const c = ev.competitions[0], [a, h] = byHome(c); const as = Math.min(60, scoreOf(a)), hs = Math.min(60, scoreOf(h)); const adj = c.neutralSite ? 0 : hfa / 2;
@@ -1024,9 +1042,11 @@ async function ratingModel() {
   for (let it = 0; it < 300; it++) { let d = 0; ids.forEach(id => { const gs = pts[id]; if (!gs.length) return; const o = gs.reduce((n, g) => n + (g.f - AVG - (DEF[g.opp] ?? UD)), 0) / (gs.length + K), df = gs.reduce((n, g) => n + (g.ag - AVG - (OFF[g.opp] ?? UO)), 0) / (gs.length + K); d += Math.abs(o - OFF[id]) + Math.abs(df - DEF[id]); OFF[id] = o; DEF[id] = df; }); if (d < 1e-4) break; }
   ids.forEach(id => { const n = pts[id].length, sh = n / (n + 1); T[id].off = OFF[id] * sh; T[id].def = DEF[id] * sh; T[id].avgPts = AVG; });
   const rt = id => T[id]?.rating ?? UNRATED;
-  const pWin = (home, away, neutral = false) => 1 / (1 + Math.exp(-((rt(home) - rt(away)) + (neutral ? 0 : hfa)) / PWIN_SCALE()));
+  // win probability: model line, blended 60/40 with the betting line when ESPN carries one for the game (fitted: brings log loss to the market's level)
+  const lineOf = (home, away, neutral = false, mkt = null) => { const ml = (rt(home) - rt(away)) + (neutral ? 0 : hfa); return mkt != null && !isCFB() ? MKT_BLEND * mkt + (1 - MKT_BLEND) * ml : ml; };
+  const pWin = (home, away, neutral = false, mkt = null) => 1 / (1 + Math.exp(-lineOf(home, away, neutral, mkt) / PWIN_SCALE()));
   const teamOf = (id, g) => T[id]?.team || g?.teams?.[id] || { id, abbreviation: 'FCS', displayName: 'FCS opponent' };
-  const v = { T, ids, played, remaining, pWin, rt, teamOf, games: all, stnd }; ratingCache = { key, t: Date.now(), v }; logPredictions(v); snapshotRatings(v); return v;
+  const v = { T, ids, played, remaining, pWin, lineOf, rt, teamOf, games: all, stnd, prior: !!prevPrior }; ratingCache = { key, t: Date.now(), v }; logPredictions(v); snapshotRatings(v); return v;
 }
 async function power() {
   const M = await ratingModel();
@@ -1036,7 +1056,7 @@ async function power() {
   const oRank = {}, dRank = {}; [...rows].sort((a, b) => b.off - a.off).forEach((r, i) => oRank[r.id] = i + 1); [...rows].sort((a, b) => a.def - b.def).forEach((r, i) => dRank[r.id] = i + 1);
   view.innerHTML = `<div class="bar"><div><h1>Power index</h1><h2>Opponent-adjusted ratings computed here from every result · in points vs. an average ${isCFB() ? 'FBS' : 'NFL'} team · not an ESPN ranking</h2></div></div>
     <div class="panel"><h3>All ${rows.length} teams<span class="pill">click a column to sort</span></h3><div class="tw"><table id="pw"><thead><tr><th class="sort" data-k="rank">#</th><th class="sort" data-k="team">Team</th><th class="num sort" data-k="rec">Record</th><th class="num sort" data-k="rating">Rating</th><th class="num sort" data-k="delta">Δ wk</th><th class="num sort" data-k="off">Offense</th><th class="num sort" data-k="def">Defense</th><th class="num sort" data-k="sos">SOS<br><small>opp rating</small></th><th class="num sort" data-k="adjMov">Adj. MOV</th><th class="num sort" data-k="mov">Raw MOV</th><th class="num sort" data-k="pf">PF/G</th><th class="num sort" data-k="pa">PA/G</th><th class="num sort" data-k="pyth">Pyth W-L</th><th class="num sort" data-k="luck">Luck</th><th class="num sort" data-k="last3">Last 3<br><small>adj. form</small></th><th class="num">STRK</th></tr></thead><tbody></tbody></table></div></div>
-    <p class="note"><b>Rating</b> is a simple-rating-system number: each team's average margin (home field removed, blowouts capped at 28) plus the average rating of the opponents it played, solved so every result is judged against who it came against. Beating a +20 team by 10 counts more than beating a −15 team by 30. <b>SOS</b> is the average rating of opponents played so far, in points. <b>Adj. MOV</b> is margin after the home-field and cap adjustments; ratings are regressed toward average early in the season. ${isCFB() ? 'FCS opponents count as −30. ' : ''}<b>Offense</b> and <b>Defense</b> are the same idea solved on points scored and allowed separately: points per game above an average opponent's defense, and points per game held below an average offense (both positive = good). <b>Δ wk</b> is movement since last week's snapshot. <b>Luck</b> is actual win% minus Pythagorean expectation. The rating gap plus ${HFA()} points of home field feeds every win probability on the site. See <a class="lnk" href="#accuracy">how accurate it has been →</a></p>`;
+    <p class="note"><b>Rating</b> is an opponent-adjusted margin number: each team's average adjusted margin plus the average rating of the opponents it played, solved so every result is judged against who it came against. Beating a +20 team by 10 counts more than beating a −15 team by 30. ${isCFB() ? 'Blowouts are capped at 28 and home field (3 points) is removed first. ' : 'Margins count in full to 14 points, half beyond that and not at all past 35, and home field (1.5 points) is removed first. '}${isCFB() ? 'Early in the season the AP poll stands in for strength until a team has four results.' : 'Last season\'s final ratings, scaled to 60%, are the preseason starting point and count like four games of evidence, so a 1-0 team is not suddenly #1.'} <b>SOS</b> is the average rating of opponents played so far, in points. <b>Adj. MOV</b> is margin after the home-field and cap adjustments. ${isCFB() ? 'FCS opponents count as −30. ' : ''}<b>Offense</b> and <b>Defense</b> are the same idea solved on points scored and allowed separately: points per game above an average opponent's defense, and points per game held below an average offense (both positive = good). <b>Δ wk</b> is movement since last week's snapshot. <b>Luck</b> is actual win% minus Pythagorean expectation. The rating gap plus ${HFA()} points of home field feeds every win probability on the site. See <a class="lnk" href="#accuracy">how accurate it has been →</a></p>`;
   const table = document.getElementById('pw');
   sortable(table, rows, { rank: r => -r.rank, team: r => r.team.displayName, rec: r => r.pct, rating: r => r.rating, delta: r => r.delta ?? -99, off: r => r.off, def: r => -r.def, sos: r => r.sos, adjMov: r => r.adjMov, mov: r => r.mov, pf: r => r.g ? r.pf / r.g : 0, pa: r => r.g ? -r.pa / r.g : 0, pyth: r => r.pyth, luck: r => r.luck, last3: r => r.last3 },
     r => `<tr class="clk ${isFav(r.team.id) ? 'fav' : ''}" data-t="${esc(r.team.id)}"><td class="num">${r.rank}</td><td class="tm"><img src="${esc(logo(r.team))}" alt="">${esc(r.team.displayName)} <span class="tag">${esc(r.conf)}</span></td><td class="num">${r.w}-${r.l}${r.t ? '-' + r.t : ''}</td><td class="num ${r.rating >= 0 ? 'pos' : 'neg'}"><b>${sgn(r.rating.toFixed(1))}</b></td><td class="num ${r.delta > .3 ? 'pos' : r.delta < -.3 ? 'neg' : 'muted'}">${r.delta == null ? '–' : r.delta > .3 ? '▲' + r.delta.toFixed(1) : r.delta < -.3 ? '▼' + Math.abs(r.delta).toFixed(1) : '·'}</td><td class="num">${sgn(r.off.toFixed(1))} <small class="muted">${ord(oRank[r.id])}</small></td><td class="num">${sgn((-r.def).toFixed(1))} <small class="muted">${ord(dRank[r.id])}</small></td><td class="num ${r.sos > 2 ? 'pos' : r.sos < -2 ? 'neg' : ''}">${sgn(r.sos.toFixed(1))}</td><td class="num">${sgn(r.adjMov.toFixed(1))}</td><td class="num muted">${sgn(r.mov.toFixed(1))}</td><td class="num">${r.g ? (r.pf / r.g).toFixed(1) : '–'}</td><td class="num">${r.g ? (r.pa / r.g).toFixed(1) : '–'}</td><td class="num">${r.pythW.toFixed(1)}-${(r.g - r.pythW).toFixed(1)}</td><td class="num ${r.luck > .05 ? 'pos' : r.luck < -.05 ? 'neg' : ''}">${sgn(Math.round(r.luck * 100))}%</td><td class="num">${sgn(r.last3.toFixed(1))}</td><td class="num">${esc(r.streak)}</td></tr>`, 'rating');
@@ -1412,7 +1432,7 @@ async function team(id, tab = 'schedule') {
   view.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { history.replaceState(null, '', `#team/${id}/${b.dataset.tab}`); team(id, b.dataset.tab); });
   wire();
   if (isCur()) buildModel().then(M => { const el = document.getElementById('remsched'); if (!el) return; const rem = M.remaining.filter(g => g.a === String(id) || g.h === String(id)).sort((x, y) => (x.wk || 0) - (y.wk || 0));
-    const rows = rem.map(g => { const home = g.h === String(id); const op = home ? g.a : g.h; const p = home ? M.pWin(g.h, g.a, g.neutral) : 1 - M.pWin(g.h, g.a, g.neutral); return { g, home, op, p }; });
+    const rows = rem.map(g => { const home = g.h === String(id); const op = home ? g.a : g.h; const p = home ? M.pWin(g.h, g.a, g.neutral, g.mkt) : 1 - M.pWin(g.h, g.a, g.neutral, g.mkt); return { g, home, op, p }; });
     const xw = rows.reduce((n, r) => n + r.p, 0); const sos = rows.length ? rows.reduce((n, r) => n + M.rt(r.op), 0) / rows.length : 0;
     const hist = store.get(LK('oddsHist:' + SEASON), {}); const pts = Object.keys(hist).map(Number).sort((a, b) => a - b).filter(w => hist[w][id] != null);
     const me = M.T[String(id)]; const oR = me ? [...M.ids].sort((a, b) => M.T[b].off - M.T[a].off).indexOf(String(id)) + 1 : 0, dR = me ? [...M.ids].sort((a, b) => M.T[a].def - M.T[b].def).indexOf(String(id)) + 1 : 0;
@@ -1540,7 +1560,7 @@ async function simSeason(M, N, onProgress) {
   const run = (from, to) => { for (let n = from; n < to; n++) {
     const W = {}, PD = {}, H = {}; ids.forEach(id => { W[id] = T[id].w + T[id].t / 2; PD[id] = T[id].pf - T[id].pa; });
     Object.entries(h2hBase).forEach(([k, v]) => H[k] = [...v]);
-    remaining.forEach(g => { const ph = pWin(g.h, g.a, g.neutral); const k = g.a + '|' + g.h; (H[k] ||= [0, 0]); if (Math.random() < ph) { if (W[g.h] != null) { W[g.h]++; PD[g.h] += 7; } if (W[g.a] != null) PD[g.a] -= 7; H[k][1]++; } else { if (W[g.a] != null) { W[g.a]++; PD[g.a] += 7; } if (W[g.h] != null) PD[g.h] -= 7; H[k][0]++; } });
+    remaining.forEach(g => { const ph = pWin(g.h, g.a, g.neutral, g.mkt); const k = g.a + '|' + g.h; (H[k] ||= [0, 0]); if (Math.random() < ph) { if (W[g.h] != null) { W[g.h]++; PD[g.h] += 7; } if (W[g.a] != null) PD[g.a] -= 7; H[k][1]++; } else { if (W[g.a] != null) { W[g.a]++; PD[g.a] += 7; } if (W[g.h] != null) PD[g.h] -= 7; H[k][0]++; } });
     const cmp = (x, y) => { if (W[y] !== W[x]) return W[y] - W[x]; const k1 = H[x + '|' + y] || [0, 0], k2 = H[y + '|' + x] || [0, 0]; const xw = k1[0] + k2[1], yw = k1[1] + k2[0]; if (xw !== yw) return yw - xw; return (PD[y] - PD[x]) || (Math.random() - .5); };
     Object.values(confs).forEach(cids => { const winners = Object.entries(divs).filter(([k]) => k.startsWith(T[cids[0]].conf + '/')).map(([, m]) => [...m].sort(cmp)[0]).sort(cmp);
       const wc = cids.filter(id => !winners.includes(id)).sort(cmp).slice(0, 3); const inP = [...winners, ...wc];
@@ -1690,7 +1710,7 @@ async function sos() {
   const M = await buildModel(); const T = M.T; const calF = await seasonCalendar().catch(() => null);
   const pct = id => { const r = T[id]; const g = r.w + r.l + r.t; return g ? (r.w + r.t / 2) / g : .5; };
   const rows = M.ids.map(id => { const pl = M.played.filter(g => g.a === id || g.h === id).map(g => g.a === id ? g.h : g.a); const rem = M.remaining.filter(g => g.a === id || g.h === id).sort((x, y) => (x.wk || 0) - (y.wk || 0));
-    const remRows = rem.map(g => { const home = g.h === id; const op = home ? g.a : g.h; return { op, home, wk: g.wk, p: home ? M.pWin(g.h, g.a, g.neutral) : 1 - M.pWin(g.h, g.a, g.neutral), rt: M.rt(op), ev: g.ev, g }; });
+    const remRows = rem.map(g => { const home = g.h === id; const op = home ? g.a : g.h; return { op, home, wk: g.wk, p: home ? M.pWin(g.h, g.a, g.neutral, g.mkt) : 1 - M.pWin(g.h, g.a, g.neutral, g.mkt), rt: M.rt(op), ev: g.ev, g }; });
     const avg = arr => arr.length ? arr.reduce((n, x) => n + x, 0) / arr.length : null;
     let hard = null; for (let i = 0; i + 3 <= remRows.length; i++) { const s = avg(remRows.slice(i, i + 3).map(x => x.rt)); if (hard == null || s > hard.v) hard = { v: s, from: remRows[i].wk, to: remRows[i + 2].wk }; }
     return { id, team: T[id].team, conf: T[id].conf, rec: `${T[id].w}-${T[id].l}${T[id].t ? '-' + T[id].t : ''}`, pastPct: avg(pl.map(pct)), pastRt: avg(pl.map(o => T[o].rating)), remRt: avg(remRows.map(x => x.rt)), remN: remRows.length, projW: T[id].w + T[id].t / 2 + remRows.reduce((n, x) => n + x.p, 0), hard, remRows, rating: T[id].rating }; });
@@ -1817,7 +1837,7 @@ async function cfpOdds() {
   const confs = {}; ids.forEach(id => (confs[confOf(id)] ||= []).push(id));
   const run = (from, to) => { for (let n = from; n < to; n++) {
     const W = {}; ids.forEach(id => W[id] = T[id].w + T[id].t / 2);
-    M.remaining.forEach(g => { if (Math.random() < M.pWin(g.h, g.a, g.neutral)) { if (W[g.h] != null) W[g.h]++; } else if (W[g.a] != null) W[g.a]++; });
+    M.remaining.forEach(g => { if (Math.random() < M.pWin(g.h, g.a, g.neutral, g.mkt)) { if (W[g.h] != null) W[g.h]++; } else if (W[g.a] != null) W[g.a]++; });
     const comp = {}; ids.forEach(id => comp[id] = W[id] + T[id].rating / 6 + (prior[id] || 0) + (Math.random() - .5) * .6);
     const champs = Object.entries(confs).filter(([c, m]) => autoOk(m[0])).map(([, m]) => [...m].sort((a, b) => comp[b] - comp[a])[0]);
     champs.forEach(id => out[id].champ++);
@@ -1844,7 +1864,7 @@ async function cfpOdds() {
 const PRED_KEY = () => LK('pred:' + SEASON);
 function logPredictions(M) {
   if (!isCur()) return; try { const log = store.get(PRED_KEY(), {}); let n = 0;
-    M.remaining.forEach(g => { if (!g.pre || g.unrated) return; const p = M.pWin(g.h, g.a, g.neutral); const e = log[g.ev.id]; if (!e || Math.abs(e.p - p) > .002) { log[g.ev.id] = { ...(e || {}), wk: g.wk, h: g.h, a: g.a, p: Math.round(p * 1000) / 1000, t: Date.now() }; n++; } });
+    M.remaining.forEach(g => { if (!g.pre || g.unrated) return; const p = M.pWin(g.h, g.a, g.neutral, g.mkt); const e = log[g.ev.id]; if (!e || Math.abs(e.p - p) > .002) { log[g.ev.id] = { ...(e || {}), wk: g.wk, h: g.h, a: g.a, p: Math.round(p * 1000) / 1000, t: Date.now() }; n++; } });
     if (n) store.set(PRED_KEY(), log); } catch {}
 }
 function logEspnPrediction(evId, summary) { try { const pr = summary.predictor; const hp = num(pr?.homeTeam?.gameProjection); if (!hp) return; const log = store.get(PRED_KEY(), {}); if (log[evId] && log[evId].espn == null && summary.header?.competitions?.[0]?.status?.type?.state === 'pre') { log[evId].espn = Math.round(hp * 10) / 1000; store.set(PRED_KEY(), log); } } catch {} }
@@ -1942,7 +1962,7 @@ async function ifHoldHTML(events) {
 
 /* ---------- 11 · matchup preview ---------- */
 function previewText(M, aId, hId, odds, neutral) {
-  const A = M.T[aId], H = M.T[hId]; if (!A || !H) return ''; const p = M.pWin(hId, aId, neutral); const fav = p >= .5 ? H : A, dog = fav === H ? A : H; const pf = Math.max(p, 1 - p);
+  const A = M.T[aId], H = M.T[hId]; if (!A || !H) return ''; const mkt = odds ? mktOf({ competitions: [{ odds: [odds], competitors: [{ homeAway: 'home', team: H.team }, { homeAway: 'away', team: A.team }] }] }) : null; const p = M.pWin(hId, aId, neutral, mkt); const fav = p >= .5 ? H : A, dog = fav === H ? A : H; const pf = Math.max(p, 1 - p);
   const spread = (H.rating - A.rating) + (neutral ? 0 : HFA()); const modelLine = `${esc(fav.team.abbreviation)} by ${Math.abs(spread).toFixed(1)}`;
   const rk = (arr, id, key, asc) => { const s = [...arr].sort((x, y) => asc ? M.T[x][key] - M.T[y][key] : M.T[y][key] - M.T[x][key]); return s.indexOf(id) + 1; };
   const n = M.ids.length; const oA = rk(M.ids, aId, 'off'), oH = rk(M.ids, hId, 'off'), dA = rk(M.ids, aId, 'def', true), dH = rk(M.ids, hId, 'def', true);
@@ -2296,7 +2316,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '14.10';
+const APP_VERSION = '15.0';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
