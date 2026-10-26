@@ -823,3 +823,8 @@ table.stats td.num{font-size:13px}table.stats th{font-size:10.5px}
 .tmi{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}.tmi img{width:22px;height:22px;object-fit:contain}
 
 .lfilters .chip.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+
+/* 15.1 advanced */
+.rts{display:grid;gap:7px}.rt{display:grid;grid-template-columns:130px 1fr 44px;align-items:center;gap:10px;font-size:13px}.rb{height:8px;background:var(--panel-3);border-radius:4px;overflow:hidden}.rb i{display:block;height:100%;border-radius:4px}
+table.heat td,table.heat th{min-width:24px;text-align:center;padding:4px 2px;font-family:var(--mono);font-size:12px}table.heat td:first-child{text-align:left;font-family:var(--body);font-weight:600}
+.lgroups a.on{color:var(--fg);border-color:var(--accent)}
