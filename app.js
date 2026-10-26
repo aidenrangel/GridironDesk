@@ -512,7 +512,7 @@ async function game(id, tab = 'box') {
   const box = (s.boxscore?.players || []).map(side => `<div class="panel"><h3>${esc(side.team.displayName)}</h3>${side.statistics.filter(c => cats.includes(c.name)).map(c => `
     <div class="tw"><table><thead><tr><th>${esc(c.text || c.name)}</th>${c.labels.map(l => `<th class="num">${esc(l)}</th>`).join('')}</tr></thead><tbody>
     ${c.athletes.slice(0, c.name === 'defensive' ? 8 : 20).map(p => `<tr><td><a class="lnk" href="#player/${esc(p.athlete.id)}">${esc(p.athlete.displayName)}</a></td>${p.stats.map(v => `<td class="num">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}</div>`).join('');
-  const drives = (s.drives?.previous || []).slice().reverse().map(d => { const r = (d.result || d.displayResult || '').toUpperCase(); const k = /TD|TOUCHDOWN/.test(r) ? 'td' : /INT|FUMBLE|DOWNS|SAFETY/.test(r) ? 'to' : '';
+  const seenDC = new Set(); const drives = (s.drives?.previous || []).filter(d => { const k = d.id || d.plays?.[0]?.id; if (seenDC.has(k)) return false; seenDC.add(k); return true; }).slice().reverse().map(d => { const r = (d.result || d.displayResult || '').toUpperCase(); const k = /TD|TOUCHDOWN/.test(r) ? 'td' : /INT|FUMBLE|DOWNS|SAFETY/.test(r) ? 'to' : '';
     return `<div class="drive"><img src="${esc(logo(d.team))}" alt=""><div><b>${esc(d.team?.abbreviation || '')}</b> <span class="d">${esc(d.description || '')}${d.start?.text ? ' · from ' + esc(d.start.text) : ''}</span></div><span class="r ${k}">${esc(d.displayResult || d.result || '')}</span></div>`; }).join('');
   const info = s.gameInfo || {};
   const bc = hdr.broadcasts?.[0]?.media?.shortName || '';
@@ -699,8 +699,9 @@ async function gcState(id) {
   const sa = c ? c.competitors.find(x => x.homeAway === 'away') : null, sh = c ? c.competitors.find(x => x.homeAway === 'home') : null;
   const score = { a: sa ? num(sa.score) : num(a.score), h: sh ? num(sh.score) : num(h.score) };
   const sit = c?.situation || {};
-  const drives = [...(s.drives?.previous || []), ...(s.drives?.current ? [s.drives.current] : [])];
-  const plays = drives.flatMap(d => (d.plays || []).map(p => ({ ...p, drive: d })));
+  // ESPN sometimes lists the drive in progress under both previous and current, so keep one copy of each drive and each play
+  const seenD = new Set(); const drives = [...(s.drives?.previous || []), ...(s.drives?.current ? [s.drives.current] : [])].filter(d => { const k = d.id || (d.plays?.[0]?.id + ':' + d.team?.id); if (seenD.has(k)) return false; seenD.add(k); return true; });
+  const seenP = new Set(); const plays = drives.flatMap(d => (d.plays || []).filter(p => { if (seenP.has(p.id)) return false; seenP.add(p.id); return true; }).map(p => ({ ...p, drive: d })));
   return { id: String(id), s, ev, c, st, a, h, score, sit, drives, plays, wp: s.winprobability || [], live: st.state === 'in', pre: st.state === 'pre', post: st.completed, sbEvents: sb?.events || [] };
 }
 
@@ -2295,7 +2296,7 @@ async function settings() {
   document.getElementById('clr').onclick = () => { try { Object.keys(localStorage).filter(k => /^(rosters|nfl:|cfb:)/.test(k) && !/favTeams|sbFilter|pin|teamColors|oddsHist|pred:|rhist:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {} cache.clear(); rosterIndex = null; rosterLoading = null; leadersFull = null; leadersLoading = null; toast('Cache cleared'); };
 }
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.deferredInstall = e; });
-const APP_VERSION = '14.9';
+const APP_VERSION = '14.10';
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then(reg => { reg.update().catch(() => {}); reg.addEventListener('updatefound', () => { const nw = reg.installing; nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('New version ready · reloading'); }); }); }).catch(() => {});
   let reloaded = false; navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; setTimeout(() => location.reload(), 600); });
